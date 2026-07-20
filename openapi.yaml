@@ -95,7 +95,7 @@ paths:
       tags: [Auth]
       summary: Start registration (sends WhatsApp OTP)
       description: >
-        Step 1 of 2. Collects account details and sends a 6-digit code to the
+        Step 1 of 3. Collects account details and sends a 6-digit code to the
         phone number over WhatsApp. No account is created yet.
         Rate limited: 8 requests / 15 min per IP.
       security: []
@@ -156,8 +156,15 @@ paths:
   /api/auth/register/verify:
     post:
       tags: [Auth]
-      summary: Verify OTP and create account
-      description: Step 2 of 2. Only creates the user once the code matches. Max 5 attempts.
+      summary: Verify phone OTP, email a confirmation link
+      description: >
+        Step 2 of 3. Verifies the WhatsApp code, then immediately emails a
+        clickable confirmation link to the account's email address (see
+        server/email.ts — simulated/dev mode until RESEND_API_KEY and
+        EMAIL_FROM are set, in which case the link is returned directly
+        instead of sent). The account still does NOT exist after this call;
+        it only returns the pending email-verification info, not a session.
+        Max 5 attempts on the phone code.
       security: []
       requestBody:
         required: true
@@ -171,12 +178,80 @@ paths:
                 code: { type: string, minLength: 6, maxLength: 6 }
       responses:
         "200":
+          description: Phone verified, confirmation email sent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PendingEmailLinkResult" }
+        "400":
+          description: Expired session, too many attempts, or incorrect code
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/auth/register/resend-email:
+    post:
+      tags: [Auth]
+      summary: Resend registration confirmation email
+      description: >
+        30s cooldown between sends. Only usable after the phone step has been
+        verified. Invalidates any previously issued link for this
+        registration. Rate limited: 8 requests / 15 min per IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pendingToken]
+              properties:
+                pendingToken: { type: string }
+      responses:
+        "200":
+          description: Confirmation email resent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PendingEmailLinkResult" }
+        "400":
+          description: Pending session expired, phone not yet verified, missing token, or cooldown active
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Too many requests
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/auth/register/verify-email-link:
+    post:
+      tags: [Auth]
+      summary: Verify confirmation link and create account
+      description: >
+        Step 3 of 3. Called from the standalone /#/verify-email/:token page
+        when the user clicks the link in their email — takes only that link
+        token (not a pendingToken), since the link may be opened in a
+        different tab or device than sign-up was started on. Only creates the
+        user once both the phone code and this link have been verified. The
+        link expires 30 minutes after it's sent.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200":
           description: Account created and signed in
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AuthResult" }
         "400":
-          description: Expired session, too many attempts, or incorrect code
+          description: Link invalid, already used, or expired
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1519,6 +1594,22 @@ components:
           type: string
           nullable: true
           description: Only populated when WhatsApp isn't configured, so the flow still works end-to-end in dev.
+
+    PendingEmailLinkResult:
+      type: object
+      description: >
+        Returned after the phone step is verified during registration — a
+        clickable confirmation link has just been emailed. expiresInSeconds
+        reflects the link's 30-minute TTL (longer than the 10-minute phone
+        OTP window).
+      properties:
+        pendingToken: { type: string }
+        email: { type: string, format: email }
+        expiresInSeconds: { type: integer }
+        devVerifyUrl:
+          type: string
+          nullable: true
+          description: Only populated when Resend isn't configured — the full verification link URL, so the flow still works end-to-end in dev.
 
     RegisterStartInput:
       type: object

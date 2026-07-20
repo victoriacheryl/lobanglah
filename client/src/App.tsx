@@ -12,6 +12,7 @@ import NotFound from "@/pages/not-found";
 import Home from "@/pages/home";
 import Login from "@/pages/login";
 import Register from "@/pages/register";
+import VerifyEmail from "@/pages/verify-email";
 import ForgotPassword from "@/pages/forgot-password";
 import PostListing from "@/pages/post-listing";
 import ListingDetail from "@/pages/listing-detail";
@@ -27,6 +28,7 @@ function AppRouter() {
       <Route path="/" component={Home} />
       <Route path="/login" component={Login} />
       <Route path="/register" component={Register} />
+      <Route path="/verify-email/:token" component={VerifyEmail} />
       <Route path="/forgot-password" component={ForgotPassword} />
       <Route path="/post" component={PostListing} />
       <Route path="/listings/:id" component={ListingDetail} />

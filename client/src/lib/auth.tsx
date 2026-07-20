@@ -19,6 +19,17 @@ export interface StartRegistrationResult {
   devCode?: string;
 }
 
+/** Returned once the phone OTP is verified — a confirmation link has just
+ *  been emailed, and the account doesn't exist yet until that link is
+ *  clicked. */
+export interface VerifyPhoneResult {
+  pendingToken: string;
+  email: string;
+  expiresInSeconds: number;
+  /** Only set in dev/simulated mode (no Resend configured) — the full link URL. */
+  devVerifyUrl?: string;
+}
+
 export interface StartPasswordResetResult {
   pendingToken: string;
   phone: string;
@@ -38,7 +49,9 @@ interface AuthContextValue {
     confirmPassword: string
   ) => Promise<StartRegistrationResult>;
   resendRegistrationOtp: (pendingToken: string) => Promise<StartRegistrationResult>;
-  verifyRegistration: (pendingToken: string, code: string) => Promise<void>;
+  verifyRegistration: (pendingToken: string, code: string) => Promise<VerifyPhoneResult>;
+  resendRegistrationEmailLink: (pendingToken: string) => Promise<VerifyPhoneResult>;
+  verifyRegistrationEmailLink: (token: string) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string, confirmNewPassword: string) => Promise<void>;
   requestPasswordReset: (email: string) => Promise<StartPasswordResetResult>;
   resendPasswordResetOtp: (pendingToken: string) => Promise<StartPasswordResetResult>;
@@ -150,9 +163,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return res.json();
   }
 
-  // Step 2 of sign-up: verifies the WhatsApp code and creates the real account.
-  async function verifyRegistration(pendingToken: string, code: string) {
+  // Step 2 of sign-up: verifies the WhatsApp code. The account still doesn't
+  // exist yet — this emails a confirmation link and the frontend moves on to
+  // the "check your email" screen.
+  async function verifyRegistration(pendingToken: string, code: string): Promise<VerifyPhoneResult> {
     const res = await apiRequest("POST", "/api/auth/register/verify", { pendingToken, code });
+    return res.json();
+  }
+
+  async function resendRegistrationEmailLink(pendingToken: string): Promise<VerifyPhoneResult> {
+    const res = await apiRequest("POST", "/api/auth/register/resend-email", { pendingToken });
+    return res.json();
+  }
+
+  // Step 3 of sign-up: called from the standalone /verify-email/:token page
+  // when the user clicks the link in their email. Verifies the link token
+  // and creates the real account. Takes just the link token — this may run
+  // in a different tab/device than the one sign-up was started on, so there's
+  // no pendingToken available here.
+  async function verifyRegistrationEmailLink(token: string) {
+    const res = await apiRequest("POST", "/api/auth/register/verify-email-link", { token });
     const data = await res.json();
     persistSession(data.user, data.token);
     queryClient.clear();
@@ -209,6 +239,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         startRegistration,
         resendRegistrationOtp,
         verifyRegistration,
+        resendRegistrationEmailLink,
+        verifyRegistrationEmailLink,
         changePassword,
         requestPasswordReset,
         resendPasswordResetOtp,

@@ -64,6 +64,16 @@ export const registerVerifySchema = z.object({
 
 export type RegisterVerifyInput = z.infer<typeof registerVerifySchema>;
 
+// Step 3: the user clicks the confirmation link emailed to them, which opens
+// a standalone page carrying just the link's token — no pendingToken needed,
+// since this page may be opened in a different tab/device than sign-up
+// itself was started on.
+export const verifyEmailLinkSchema = z.object({
+  token: z.string().min(1),
+});
+
+export type VerifyEmailLinkInput = z.infer<typeof verifyEmailLinkSchema>;
+
 // ---------- Change password (logged-in user) ----------
 export const changePasswordSchema = z
   .object({

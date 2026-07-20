@@ -29,6 +29,7 @@ import fs from "node:fs";
 import { stripeEnabled, calculateFeeSgd, retrieveClientSecret } from "./stripe";
 import * as stripeStorage from "./stripe-storage";
 import { sendWhatsappOtp, normalizeSgPhone, generateOtpCode, whatsappEnabled } from "./whatsapp";
+import { sendVerificationEmail, emailEnabled } from "./email";
 
 // DB_PATH lets a production deploy point this at a mounted persistent volume
 // (e.g. "/data/data.db" on a platform whose filesystem is otherwise ephemeral)
@@ -152,21 +153,37 @@ export function invalidateAllSessions(userId: number): void {
   userIdToTokens.delete(userId);
 }
 
-// ---------- Pending registrations (WhatsApp OTP phone verification) ----------
-// No user account is created until the phone's OTP is verified. Held
-// in-memory (demo scope, matches the session-token pattern above) keyed by a
-// random pending token handed to the frontend after step 1.
+// ---------- Pending registrations (WhatsApp phone OTP + email link) ----------
+// No user account is created until BOTH the phone number and email address
+// are verified. Step 1 sends a 6-digit code to the phone over WhatsApp; once
+// that's verified, step 2 emails a clickable confirmation link; only once
+// that link is opened does the real account get created. Held in-memory
+// (demo scope, matches the session-token pattern above) keyed by a random
+// pending token handed to the frontend after step 1.
 interface PendingRegistration {
   name: string;
   email: string;
   phone: string; // normalized E.164, e.g. +6591234567
   passwordHash: string;
-  code: string;
-  expiresAt: number;
-  attempts: number;
+  phoneCode: string;
+  phoneExpiresAt: number;
+  phoneAttempts: number;
+  phoneVerified: boolean;
+  // Only populated once the phone step is verified and the email link has
+  // actually been sent (step 2).
+  emailVerifyToken?: string;
+  emailVerifyExpiresAt?: number;
 }
-const pendingRegistrations = new Map<string, PendingRegistration>();
+const pendingRegistrations = new Map<string, PendingRegistration>(); // keyed by pendingToken
+// Reverse lookup: the page the user lands on after clicking the emailed link
+// only has the link's token, not the original pendingToken from step 1 (it's
+// commonly opened in a different tab, or even a different device, than the
+// one sign-up was started on) — this map is how that page finds its way back
+// to the right pending registration.
+const emailTokenToPendingToken = new Map<string, string>();
+
 const OTP_TTL_MS = 10 * 60 * 1000;
+const EMAIL_LINK_TTL_MS = 30 * 60 * 1000;
 const MAX_OTP_ATTEMPTS = 5;
 const RESEND_COOLDOWN_MS = 30 * 1000;
 const lastSentAt = new Map<string, number>();
@@ -177,6 +194,17 @@ export interface StartRegistrationResult {
   expiresInSeconds: number;
   /** Only populated when WhatsApp isn't configured, so the demo flow still works end-to-end. */
   devCode?: string;
+}
+
+/** Result of successfully verifying the phone step — the confirmation email
+ *  has just been sent, and the frontend should show a "check your email"
+ *  screen (there's no code to enter; the link itself finishes sign-up). */
+export interface VerifyPhoneResult {
+  pendingToken: string;
+  email: string;
+  expiresInSeconds: number;
+  /** Only populated when Resend isn't configured — the full verification URL, so the demo flow still works end-to-end. */
+  devVerifyUrl?: string;
 }
 
 export async function startRegistration(input: {
@@ -198,9 +226,10 @@ export async function startRegistration(input: {
     email: input.email,
     phone: normalizedPhone,
     passwordHash: hashPassword(input.password),
-    code,
-    expiresAt: Date.now() + OTP_TTL_MS,
-    attempts: 0,
+    phoneCode: code,
+    phoneExpiresAt: Date.now() + OTP_TTL_MS,
+    phoneAttempts: 0,
+    phoneVerified: false,
   });
   lastSentAt.set(pendingToken, Date.now());
 
@@ -217,44 +246,120 @@ export async function startRegistration(input: {
 export async function resendRegistrationOtp(pendingToken: string): Promise<StartRegistrationResult> {
   const pending = pendingRegistrations.get(pendingToken);
   if (!pending) throw new Error("This sign-up session has expired. Please start again.");
+  if (pending.phoneVerified) throw new Error("Your phone number is already verified.");
   const last = lastSentAt.get(pendingToken) ?? 0;
   if (Date.now() - last < RESEND_COOLDOWN_MS) {
     throw new Error("Please wait a moment before requesting another code");
   }
-  pending.code = generateOtpCode();
-  pending.expiresAt = Date.now() + OTP_TTL_MS;
-  pending.attempts = 0;
+  pending.phoneCode = generateOtpCode();
+  pending.phoneExpiresAt = Date.now() + OTP_TTL_MS;
+  pending.phoneAttempts = 0;
   lastSentAt.set(pendingToken, Date.now());
 
-  await sendWhatsappOtp(pending.phone, pending.code);
+  await sendWhatsappOtp(pending.phone, pending.phoneCode);
 
   return {
     pendingToken,
     phone: pending.phone,
     expiresInSeconds: OTP_TTL_MS / 1000,
-    devCode: whatsappEnabled ? undefined : pending.code,
+    devCode: whatsappEnabled ? undefined : pending.phoneCode,
   };
 }
 
-export async function verifyRegistration(pendingToken: string, code: string): Promise<User> {
+/** (Re)generates the email verification link/token for a phone-verified
+ *  pending registration and sends it. `baseUrl` (e.g.
+ *  "https://lobanglah.example.com") is prepended to build the actual link,
+ *  since it points at a hash route in the SPA and the server has no fixed
+ *  notion of its own public origin. */
+async function sendPendingEmailLink(
+  pendingToken: string,
+  pending: PendingRegistration,
+  baseUrl: string
+): Promise<VerifyPhoneResult> {
+  // Invalidate any previously issued link for this registration first, so
+  // only the most recently sent link ever works.
+  if (pending.emailVerifyToken) emailTokenToPendingToken.delete(pending.emailVerifyToken);
+
+  const token = crypto.randomBytes(32).toString("hex");
+  pending.emailVerifyToken = token;
+  pending.emailVerifyExpiresAt = Date.now() + EMAIL_LINK_TTL_MS;
+  emailTokenToPendingToken.set(token, pendingToken);
+  lastSentAt.set(pendingToken, Date.now());
+
+  const verifyUrl = `${baseUrl}/#/verify-email/${token}`;
+  await sendVerificationEmail(pending.email, verifyUrl);
+
+  return {
+    pendingToken,
+    email: pending.email,
+    expiresInSeconds: EMAIL_LINK_TTL_MS / 1000,
+    devVerifyUrl: emailEnabled ? undefined : verifyUrl,
+  };
+}
+
+/** Step 2a: verifies the WhatsApp code, then immediately emails a
+ *  confirmation link — the account still doesn't exist yet at this point. */
+export async function verifyRegistration(pendingToken: string, code: string, baseUrl: string): Promise<VerifyPhoneResult> {
   const pending = pendingRegistrations.get(pendingToken);
   if (!pending) throw new Error("This sign-up session has expired. Please start again.");
-  if (Date.now() > pending.expiresAt) {
+  if (pending.phoneVerified) throw new Error("Your phone number is already verified.");
+  if (Date.now() > pending.phoneExpiresAt) {
     pendingRegistrations.delete(pendingToken);
     throw new Error("That code has expired. Please request a new one.");
   }
-  if (pending.attempts >= MAX_OTP_ATTEMPTS) {
+  if (pending.phoneAttempts >= MAX_OTP_ATTEMPTS) {
     pendingRegistrations.delete(pendingToken);
     throw new Error("Too many incorrect attempts. Please start sign-up again.");
   }
-  if (pending.code !== code) {
-    pending.attempts += 1;
+  if (pending.phoneCode !== code) {
+    pending.phoneAttempts += 1;
     throw new Error("Incorrect code. Please check your WhatsApp and try again.");
   }
 
   // Re-check email uniqueness in case it was taken while this OTP was pending.
   const existingEmail = await storage.getUserByEmail(pending.email);
   if (existingEmail) {
+    pendingRegistrations.delete(pendingToken);
+    throw new Error("An account with this email already exists");
+  }
+
+  pending.phoneVerified = true;
+  return sendPendingEmailLink(pendingToken, pending, baseUrl);
+}
+
+export async function resendRegistrationEmailLink(pendingToken: string, baseUrl: string): Promise<VerifyPhoneResult> {
+  const pending = pendingRegistrations.get(pendingToken);
+  if (!pending) throw new Error("This sign-up session has expired. Please start again.");
+  if (!pending.phoneVerified) throw new Error("Verify your phone number first.");
+  const last = lastSentAt.get(pendingToken) ?? 0;
+  if (Date.now() - last < RESEND_COOLDOWN_MS) {
+    throw new Error("Please wait a moment before requesting another email");
+  }
+  return sendPendingEmailLink(pendingToken, pending, baseUrl);
+}
+
+/** Step 2b: called when the user clicks the link in their email — verifies
+ *  the link token and, only now that both phone and email are confirmed,
+ *  actually creates the account. Takes just the link token: this runs on a
+ *  standalone page that may be opened in a different tab/device than the one
+ *  sign-up was started on, so it can't rely on any other client-side state. */
+export async function verifyRegistrationEmailLink(token: string): Promise<User> {
+  const pendingToken = emailTokenToPendingToken.get(token);
+  const pending = pendingToken ? pendingRegistrations.get(pendingToken) : undefined;
+  if (!pendingToken || !pending || pending.emailVerifyToken !== token) {
+    throw new Error("This verification link is invalid or has already been used.");
+  }
+  if (!pending.emailVerifyExpiresAt || Date.now() > pending.emailVerifyExpiresAt) {
+    emailTokenToPendingToken.delete(token);
+    pendingRegistrations.delete(pendingToken);
+    throw new Error("This verification link has expired. Please sign up again.");
+  }
+
+  // Re-check email uniqueness one more time in case it was taken while this
+  // link was pending.
+  const existingEmail = await storage.getUserByEmail(pending.email);
+  if (existingEmail) {
+    emailTokenToPendingToken.delete(token);
     pendingRegistrations.delete(pendingToken);
     throw new Error("An account with this email already exists");
   }
@@ -272,6 +377,7 @@ export async function verifyRegistration(pendingToken: string, code: string): Pr
     .returning()
     .get();
 
+  emailTokenToPendingToken.delete(token);
   pendingRegistrations.delete(pendingToken);
   return user;
 }

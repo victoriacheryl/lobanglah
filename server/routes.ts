@@ -10,6 +10,8 @@ import {
   startRegistration,
   resendRegistrationOtp,
   verifyRegistration,
+  resendRegistrationEmailLink,
+  verifyRegistrationEmailLink,
   invalidateOtherSessions,
   startPasswordReset,
   resendPasswordResetOtp,
@@ -18,6 +20,7 @@ import {
 import {
   registerStartSchema,
   registerVerifySchema,
+  verifyEmailLinkSchema,
   insertListingSchema,
   insertBidSchema,
   payFeeChargeSchema,
@@ -212,9 +215,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ---------- Auth ----------
-  // Two-step sign-up: step 1 collects details and sends a 6-digit code to the
-  // phone number over WhatsApp; step 2 verifies the code and only then creates
-  // the real account. See server/whatsapp.ts for the real/simulated send logic.
+  // Three-step sign-up: step 1 collects details and sends a 6-digit code to
+  // the phone number over WhatsApp; step 2 verifies that code and — instead
+  // of creating the account yet — emails a clickable confirmation link to
+  // the address given; step 3 happens when that link is opened (a separate,
+  // standalone request) and only then creates the real account. See
+  // server/whatsapp.ts and server/email.ts for the real/simulated send logic
+  // for each channel.
+  function requestBaseUrl(req: Request): string {
+    return `${req.protocol}://${req.get("host")}`;
+  }
+
   app.post("/api/auth/register/start", otpLimiter, async (req, res) => {
     try {
       const data = registerStartSchema.parse(req.body);
@@ -236,14 +247,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Verifies the phone OTP (step 2) and emails the confirmation link — the
+  // account still doesn't exist yet, so this intentionally does NOT return a
+  // session token/user the way it used to before email verification was
+  // added.
   app.post("/api/auth/register/verify", async (req, res) => {
     try {
       const data = registerVerifySchema.parse(req.body);
-      const user = await verifyRegistration(data.pendingToken, data.code);
+      const result = await verifyRegistration(data.pendingToken, data.code, requestBaseUrl(req));
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ message: friendlyError(err, "Could not verify code") });
+    }
+  });
+
+  app.post("/api/auth/register/resend-email", otpLimiter, async (req, res) => {
+    try {
+      const { pendingToken } = req.body ?? {};
+      if (!pendingToken) return res.status(400).json({ message: "Missing pending token" });
+      const result = await resendRegistrationEmailLink(String(pendingToken), requestBaseUrl(req));
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ message: err.message || "Could not resend email" });
+    }
+  });
+
+  // Verifies the emailed confirmation link (step 3) and creates the real
+  // account. Called from the standalone /verify-email/:token page — carries
+  // only the link token, not a pendingToken, since the link may be opened in
+  // a different tab/device than sign-up was started on.
+  app.post("/api/auth/register/verify-email-link", async (req, res) => {
+    try {
+      const data = verifyEmailLinkSchema.parse(req.body);
+      const user = await verifyRegistrationEmailLink(data.token);
       const token = createSessionToken(user.id);
       res.json({ token, user: toPublicUser(user) });
     } catch (err: any) {
-      res.status(400).json({ message: friendlyError(err, "Could not verify code") });
+      res.status(400).json({ message: friendlyError(err, "Could not verify email") });
     }
   });
 
