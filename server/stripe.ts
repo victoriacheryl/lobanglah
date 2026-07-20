@@ -108,31 +108,63 @@ export async function getPaymentIntentStatus(paymentIntentId: string): Promise<S
  * Re-fetches the client secret for an existing PaymentIntent that hasn't
  * succeeded yet — used when the poster reopens the checkout after not
  * completing it the first time (closed the modal, connection dropped,
- * etc.). Does not create a new charge or a new PaymentIntent.
+ * etc.). If the intent predates pinning payment_method_types explicitly
+ * (i.e. it was created under automatic_payment_methods and is missing
+ * PayNow), this upgrades it in place where Stripe allows that, and falls
+ * back to canceling it and creating a fresh PaymentIntent — with the same
+ * fee amount/customer/metadata — when it doesn't. The caller must persist
+ * the returned paymentIntentId if `recreated` is true, since it will differ
+ * from the one passed in.
  */
-export async function retrieveClientSecret(paymentIntentId: string): Promise<string> {
-  let intent = await requireStripe().paymentIntents.retrieve(paymentIntentId);
+export async function retrieveOrUpgradeClientSecret(params: {
+  paymentIntentId: string;
+  customerId: string;
+  listingId: number;
+  bidId: number;
+  feeAmountSgd: number;
+}): Promise<{ paymentIntentId: string; clientSecret: string; recreated: boolean }> {
+  let intent = await requireStripe().paymentIntents.retrieve(params.paymentIntentId);
   if (intent.status === "succeeded") throw new Error("This fee has already been paid");
   if (intent.status === "canceled") throw new Error("This payment was canceled — accept the bid again to retry");
   if (!intent.client_secret) throw new Error("This payment can no longer be retried — accept the bid again");
-  // Older PaymentIntents (created before payment_method_types was pinned
-  // explicitly) may still be on automatic_payment_methods and missing
-  // PayNow — try to patch them on the way out so reopening checkout shows
-  // both methods, without needing to cancel and recreate the intent. Stripe
-  // doesn't guarantee this switch is allowed post-creation, so this is a
-  // best-effort upgrade: if it fails, fall back to the original secret
-  // rather than blocking the payment entirely.
-  if (!intent.payment_method_types?.includes("paynow")) {
-    try {
-      intent = await requireStripe().paymentIntents.update(paymentIntentId, {
-        payment_method_types: ["card", "paynow"],
-      });
-    } catch {
-      // Ignore — this PaymentIntent will just show whatever methods it was
-      // originally created with (e.g. Card only via automatic_payment_methods).
-    }
+
+  if (intent.payment_method_types?.includes("paynow")) {
+    return { paymentIntentId: intent.id, clientSecret: intent.client_secret, recreated: false };
   }
-  return intent.client_secret as string;
+
+  // Try a lightweight in-place upgrade first.
+  try {
+    intent = await requireStripe().paymentIntents.update(params.paymentIntentId, {
+      payment_method_types: ["card", "paynow"],
+    });
+    if (intent.payment_method_types?.includes("paynow")) {
+      return { paymentIntentId: intent.id, clientSecret: intent.client_secret as string, recreated: false };
+    }
+  } catch {
+    // Stripe doesn't allow switching away from automatic_payment_methods on
+    // some existing PaymentIntents — fall through to recreate below.
+  }
+
+  // In-place upgrade wasn't possible: cancel the stale intent (best-effort —
+  // an orphaned, never-canceled intent is harmless, it just never gets paid)
+  // and create a fresh one with PayNow pinned from the start.
+  try {
+    await requireStripe().paymentIntents.cancel(params.paymentIntentId);
+  } catch {
+    // Ignore — already canceled, already processing, etc.
+  }
+  const fresh = await requireStripe().paymentIntents.create({
+    amount: toCents(params.feeAmountSgd),
+    currency: CURRENCY,
+    customer: params.customerId,
+    payment_method_types: ["card", "paynow"],
+    metadata: {
+      lobangListingId: String(params.listingId),
+      lobangBidId: String(params.bidId),
+      lobangKind: "platform_fee",
+    },
+  });
+  return { paymentIntentId: fresh.id, clientSecret: fresh.client_secret as string, recreated: true };
 }
 
 export function constructWebhookEvent(rawBody: Buffer, signature: string): Stripe.Event {

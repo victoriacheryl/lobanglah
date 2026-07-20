@@ -26,7 +26,7 @@ import { eq, and, or, desc } from "drizzle-orm";
 import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
-import { stripeEnabled, calculateFeeSgd, retrieveClientSecret } from "./stripe";
+import { stripeEnabled, calculateFeeSgd, retrieveOrUpgradeClientSecret, ensureCustomer } from "./stripe";
 import * as stripeStorage from "./stripe-storage";
 import { sendWhatsappOtp, normalizeSgPhone, generateOtpCode, whatsappEnabled } from "./whatsapp";
 import { sendVerificationEmail, emailEnabled } from "./email";
@@ -1051,8 +1051,33 @@ export class DatabaseStorage implements IStorage {
     if (feeCharge.status === "paid") throw new Error("This fee has already been paid");
     if (feeCharge.status === "failed") throw new Error("This fee charge failed — accept the bid again to retry");
     if (!feeCharge.stripePaymentIntentId) throw new Error("No Stripe payment is associated with this fee charge");
-    const clientSecret = await retrieveClientSecret(feeCharge.stripePaymentIntentId);
-    return { clientSecret, feeAmount: feeCharge.feeAmount, listingId: feeCharge.listingId };
+
+    const poster = db.select().from(users).where(eq(users.id, posterId)).get();
+    if (!poster) throw new Error("Poster account not found");
+    const customerId = await ensureCustomer({
+      id: poster.id,
+      email: poster.email,
+      name: poster.name,
+      stripeCustomerId: poster.stripeCustomerId,
+    });
+    if (!poster.stripeCustomerId) {
+      db.update(users).set({ stripeCustomerId: customerId }).where(eq(users.id, poster.id)).run();
+    }
+
+    const result = await retrieveOrUpgradeClientSecret({
+      paymentIntentId: feeCharge.stripePaymentIntentId,
+      customerId,
+      listingId: feeCharge.listingId,
+      bidId: feeCharge.bidId,
+      feeAmountSgd: feeCharge.feeAmount,
+    });
+    if (result.recreated) {
+      db.update(feeCharges)
+        .set({ stripePaymentIntentId: result.paymentIntentId })
+        .where(eq(feeCharges.id, feeChargeId))
+        .run();
+    }
+    return { clientSecret: result.clientSecret, feeAmount: feeCharge.feeAmount, listingId: feeCharge.listingId };
   }
 
   /** Returns both parties' names/phone numbers for an accepted bid, but only once
