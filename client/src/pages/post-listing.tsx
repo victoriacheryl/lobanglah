@@ -32,7 +32,7 @@ export default function PostListing() {
     <div className="mx-auto max-w-xl px-4 py-10">
       <Card>
         <CardHeader>
-          <CardTitle className="font-display text-lg">Post a listing</CardTitle>
+          <CardTitle className="font-display text-lg">Post a Lobang</CardTitle>
           <CardDescription>
             All listings are reviewed by our team before going live to keep LobangLah! safe for everyone.
           </CardDescription>
