@@ -1,0 +1,1759 @@
+openapi: 3.0.3
+info:
+  title: LobangLah! API
+  description: >
+    Singapore local services & marketplace API. Users post "seek" or "offer"
+    listings, receive bids, and settle a small platform fee once a bid is
+    accepted (PayNow/Card simulated flow, or real Stripe when configured).
+    Phone numbers are verified via WhatsApp OTP at registration.
+  version: 1.0.0
+servers:
+  - url: /
+    description: Same-origin (the client is served from the same host as the API)
+
+tags:
+  - name: Config
+  - name: Auth
+  - name: Listings
+  - name: Bids
+  - name: Fees
+  - name: Messages
+  - name: Notifications
+  - name: Admin
+  - name: Public
+  - name: Stripe
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ---------- Public config ----------
+  /api/config:
+    get:
+      tags: [Config]
+      summary: Get public runtime config
+      description: Tells the client whether real Stripe checkout is configured.
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stripePublishableKey:
+                    type: string
+                    nullable: true
+
+  # ---------- Stripe webhook ----------
+  /api/stripe/webhook:
+    post:
+      tags: [Stripe]
+      summary: Stripe webhook receiver
+      description: >
+        Handles `payment_intent.succeeded` / `payment_intent.payment_failed`.
+        Validates the `Stripe-Signature` header against the raw request body.
+        Work in progress — only active when Stripe env vars are configured.
+      security: []
+      parameters:
+        - in: header
+          name: Stripe-Signature
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Event processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received:
+                    type: boolean
+        "400":
+          description: Missing/invalid signature, or Stripe not configured
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: Webhook handler failed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ---------- Auth ----------
+  /api/auth/register/start:
+    post:
+      tags: [Auth]
+      summary: Start registration (sends WhatsApp OTP)
+      description: >
+        Step 1 of 2. Collects account details and sends a 6-digit code to the
+        phone number over WhatsApp. No account is created yet.
+        Rate limited: 8 requests / 15 min per IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterStartInput" }
+      responses:
+        "200":
+          description: OTP sent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PendingOtpResult" }
+        "400":
+          description: Invalid registration details
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Too many requests
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/auth/register/resend:
+    post:
+      tags: [Auth]
+      summary: Resend registration OTP
+      description: "30s cooldown between sends. Rate limited: 8 requests / 15 min per IP."
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pendingToken]
+              properties:
+                pendingToken: { type: string }
+      responses:
+        "200":
+          description: OTP resent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PendingOtpResult" }
+        "400":
+          description: Pending session expired, missing token, or cooldown active
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Too many requests
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/auth/register/verify:
+    post:
+      tags: [Auth]
+      summary: Verify OTP and create account
+      description: Step 2 of 2. Only creates the user once the code matches. Max 5 attempts.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pendingToken, code]
+              properties:
+                pendingToken: { type: string }
+                code: { type: string, minLength: 6, maxLength: 6 }
+      responses:
+        "200":
+          description: Account created and signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResult" }
+        "400":
+          description: Expired session, too many attempts, or incorrect code
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in with email + password
+      description: "Rate limited: 10 requests / 15 min per IP."
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200":
+          description: Signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResult" }
+        "400":
+          description: Missing email or password
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Incorrect email or password
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Account is currently suspended or banned
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Too many login attempts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get the current signed-in user
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Change password (signed in)
+      description: Signs out every other session for this account on success.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword, confirmNewPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 6 }
+                confirmNewPassword: { type: string, minLength: 6 }
+      responses:
+        "200":
+          description: Password changed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "400":
+          description: Current password incorrect, or passwords don't match
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/auth/forgot-password/start:
+    post:
+      tags: [Auth]
+      summary: Start password reset (sends WhatsApp OTP)
+      description: "Sends a code to the phone on file for the account. Rate limited: 8 requests / 15 min per IP."
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "200":
+          description: OTP sent (phone number returned masked)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PendingOtpResult" }
+        "400":
+          description: No account found with this email
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Too many requests
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/auth/forgot-password/resend:
+    post:
+      tags: [Auth]
+      summary: Resend password-reset OTP
+      description: "30s cooldown between sends. Rate limited: 8 requests / 15 min per IP."
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pendingToken]
+              properties:
+                pendingToken: { type: string }
+      responses:
+        "200":
+          description: OTP resent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PendingOtpResult" }
+        "400":
+          description: Pending session expired, missing token, or cooldown active
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Too many requests
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/auth/forgot-password/reset:
+    post:
+      tags: [Auth]
+      summary: Complete password reset
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pendingToken, code, newPassword, confirmNewPassword]
+              properties:
+                pendingToken: { type: string }
+                code: { type: string, minLength: 6, maxLength: 6 }
+                newPassword: { type: string, minLength: 6 }
+                confirmNewPassword: { type: string, minLength: 6 }
+      responses:
+        "200":
+          description: Password reset; all sessions for this account invalidated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "400":
+          description: Expired session, too many attempts, or incorrect code
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ---------- Listings ----------
+  /api/listings:
+    get:
+      tags: [Listings]
+      summary: Browse live listings
+      security: []
+      parameters:
+        - in: query
+          name: type
+          schema: { type: string, enum: [seek, offer] }
+        - in: query
+          name: category
+          schema: { type: string }
+        - in: query
+          name: location
+          schema: { type: string }
+        - in: query
+          name: q
+          description: Free-text search over title/description
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ListingWithOwner" }
+    post:
+      tags: [Listings]
+      summary: Create a listing (goes to pending review)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InsertListing" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Listing" }
+        "400":
+          description: Invalid listing details
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/listings/mine:
+    get:
+      tags: [Listings]
+      summary: List the current user's own listings, plus listings they've bid on as a provider
+      description: >-
+        For admins, `own` contains every listing platform-wide (via the admin moderation view)
+        and `offering` is always empty. For regular users, `own` contains only listings they
+        posted themselves, and `offering` contains listings posted by someone else where they
+        placed a bid to provide the service.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MyListingsResponse" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/listings/{id}:
+    get:
+      tags: [Listings]
+      summary: Get a listing by id
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ListingId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ListingWithOwner" }
+        "404":
+          description: Listing not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    patch:
+      tags: [Listings]
+      summary: Update a listing
+      description: >
+        Only the owner may edit, only while it has zero bids and isn't
+        closed. Any successful edit resets status to "pending" for re-review.
+      parameters:
+        - $ref: "#/components/parameters/ListingId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InsertListingPatch" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Listing" }
+        "400":
+          description: Invalid update
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Listing not found, not yours, or already closed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ---------- Bids ----------
+  /api/listings/{id}/bids:
+    get:
+      tags: [Bids]
+      summary: List bids on a listing
+      description: The owner and admins see every bid; anyone else sees only their own.
+      parameters:
+        - $ref: "#/components/parameters/ListingId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BidWithBidder" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Listing not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      tags: [Bids]
+      summary: Place a bid on a listing
+      parameters:
+        - $ref: "#/components/parameters/ListingId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InsertBid" }
+      responses:
+        "201":
+          description: Bid created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Bid" }
+        "400":
+          description: Listing not open, bidding on own listing, or invalid bid
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Listing not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/bids/{id}/accept:
+    post:
+      tags: [Bids]
+      summary: Accept a bid
+      description: >
+        Only the listing owner may accept. Creates a pending platform-fee
+        charge. If Stripe is enabled, `clientSecret` is returned so the
+        client can open the card PaymentElement immediately; otherwise the
+        client falls back to `/api/fees/{id}/pay` (PayNow/simulated card).
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Bid id
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Bid accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  listing: { $ref: "#/components/schemas/Listing" }
+                  feeCharge: { $ref: "#/components/schemas/FeeCharge" }
+                  clientSecret:
+                    type: string
+                    nullable: true
+                    description: Present only when Stripe is enabled.
+        "400":
+          description: Not the owner, listing not live, bid not pending, or quota reached
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/bids/{id}/reject:
+    post:
+      tags: [Bids]
+      summary: Reject a single pending bid
+      description: >
+        Only the listing owner may reject, and only while the bid is still
+        pending. The listing stays live and every other bid is untouched —
+        this is separate from the bulk auto-reject that fires on the
+        remaining pending bids once a listing closes.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Bid id
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Bid rejected
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Bid" }
+        "400":
+          description: Not the owner, or bid not pending
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/bids/{id}/contact:
+    get:
+      tags: [Bids]
+      summary: Get contact details for an accepted bid
+      description: >
+        Returns both parties' name/phone, but only once the platform fee has
+        been paid, and only to the poster or the accepted provider.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Bid id
+          schema: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  posterName: { type: string }
+                  posterPhone: { type: string }
+                  providerName: { type: string }
+                  providerPhone: { type: string }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Contact details not available yet
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ---------- Fees ----------
+  /api/fees/{id}/pay:
+    post:
+      tags: [Fees]
+      summary: Pay the platform fee (PayNow or simulated card)
+      description: >
+        Poster settles the fee for an accepted bid. Marks the fee "paid" and
+        releases contact details to both parties. This is the non-Stripe
+        (simulated) settlement path.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Fee charge id
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [method]
+              properties:
+                method: { type: string, enum: [card, paynow] }
+      responses:
+        "200":
+          description: Fee paid
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeeCharge" }
+        "400":
+          description: Not the poster, already failed, or invalid method
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/fees/mine:
+    get:
+      tags: [Fees]
+      summary: List fee charges involving the current user
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/FeeCharge" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/wallet/transactions:
+    get:
+      tags: [Admin]
+      summary: Every fee charge platform-wide, for the admin wallet's transaction history
+      description: >-
+        Each fee charge corresponds 1:1 to a bid that was accepted, so this doubles as the full
+        list of "closed bids transacted" on the platform. Enriched with listingTitle,
+        posterName, and providerName so the admin wallet can group by week/month client-side.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  allOf:
+                    - { $ref: "#/components/schemas/FeeCharge" }
+                    - type: object
+                      properties:
+                        listingTitle: { type: string }
+                        posterName: { type: string }
+                        providerName: { type: string }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/listings/{id}/fees:
+    get:
+      tags: [Fees]
+      summary: List fee charges for a listing
+      description: Visible to the owner (all) or a participant (only their own).
+      parameters:
+        - $ref: "#/components/parameters/ListingId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/FeeCharge" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Listing not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/stripe/sync/{paymentIntentId}:
+    post:
+      tags: [Stripe]
+      summary: Force-sync a fee charge's status from Stripe
+      description: >
+        Fallback finalizer called right after `stripe.confirmPayment`
+        resolves client-side, so the fee updates immediately even if the
+        webhook hasn't reached the server yet. Work in progress.
+      parameters:
+        - in: path
+          name: paymentIntentId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Synced
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "400":
+          description: Could not sync payment status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ---------- Messages ----------
+  /api/listings/{id}/participants:
+    get:
+      tags: [Messages]
+      summary: List messageable participants for a listing
+      description: The poster, plus everyone who has bid — excluding the caller.
+      parameters:
+        - $ref: "#/components/parameters/ListingId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: integer }
+                    name: { type: string }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/listings/{id}/messages/{otherUserId}:
+    get:
+      tags: [Messages]
+      summary: Get the conversation with another user about a listing
+      description: >-
+        Contact info (emails/phone numbers) embedded in message text is masked. Every message
+        includes senderName — normally that's just the caller or the other party, but an admin
+        message intercepted directly into this poster<->bidder thread (see POST
+        /api/admin/listings/{id}/messages/thread) comes from a third party, so the sender name
+        can't be assumed from context.
+      parameters:
+        - $ref: "#/components/parameters/ListingId"
+        - in: path
+          name: otherUserId
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  allOf:
+                    - { $ref: "#/components/schemas/Message" }
+                    - type: object
+                      properties:
+                        senderName: { type: string }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/listings/{id}/messages:
+    post:
+      tags: [Messages]
+      summary: Send a message about a listing
+      description: Recipient must be an actual participant of the listing (poster or a bidder).
+      parameters:
+        - $ref: "#/components/parameters/ListingId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content, recipientId]
+              properties:
+                content: { type: string, minLength: 1, maxLength: 2000 }
+                recipientId: { type: integer }
+      responses:
+        "201":
+          description: Message sent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Message" }
+        "400":
+          description: Missing content or recipient
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Recipient is not a participant of this listing
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/listings/{id}/messages:
+    get:
+      tags: [Admin]
+      summary: Every message on a listing, across all bidder threads, for moderation
+      description: >-
+        Unlike GET /api/listings/{id}/messages/{otherUserId}, which is scoped to the caller's
+        own thread, this returns every message exchanged on the listing (poster with each
+        bidder), each one labeled with senderName/recipientName so a third-party admin can
+        tell who wrote what without being a participant.
+      parameters:
+        - $ref: "#/components/parameters/ListingId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  allOf:
+                    - { $ref: "#/components/schemas/Message" }
+                    - type: object
+                      properties:
+                        senderName: { type: string }
+                        recipientName: { type: string }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Listing not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/listings/{id}/messages/thread:
+    post:
+      tags: [Admin]
+      summary: Post a message directly into an existing poster<->bidder thread
+      description: >-
+        Unlike POST /api/listings/{id}/messages (a private 1:1 only the admin and one other
+        person can see), this inserts the message into the shared conversation between the
+        listing's poster and the given bidder — both of them see it via their normal Messages
+        tab, tagged with the admin as sender. Both are notified (whichever of them isn't already
+        the recipient of record).
+      parameters:
+        - $ref: "#/components/parameters/ListingId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content, bidderId]
+              properties:
+                content: { type: string, minLength: 1, maxLength: 2000 }
+                bidderId:
+                  type: integer
+                  description: The bidder whose thread with the poster this message should appear in.
+      responses:
+        "201":
+          description: Message sent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Message" }
+        "400":
+          description: Missing content/bidderId, or that user hasn't bid on this listing
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Listing not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ---------- Notifications ----------
+  /api/notifications:
+    get:
+      tags: [Notifications]
+      summary: List notifications for the current user
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Notification" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/notifications/unread-count:
+    get:
+      tags: [Notifications]
+      summary: Get unread notification count
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/notifications/{id}/read:
+    post:
+      tags: [Notifications]
+      summary: Mark one notification as read
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/notifications/read-all:
+    post:
+      tags: [Notifications]
+      summary: Mark all notifications as read
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ---------- Admin ----------
+  /api/admin/listings/pending:
+    get:
+      tags: [Admin]
+      summary: List listings awaiting review
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ListingWithOwner" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/listings/{id}/approve:
+    post:
+      tags: [Admin]
+      summary: Approve a pending listing
+      parameters:
+        - $ref: "#/components/parameters/ListingId"
+      responses:
+        "200":
+          description: Approved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Listing" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Listing not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/listings/{id}/reject:
+    post:
+      tags: [Admin]
+      summary: Reject a pending listing
+      parameters:
+        - $ref: "#/components/parameters/ListingId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  default: Did not meet guidelines
+      responses:
+        "200":
+          description: Rejected
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Listing" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Listing not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/listings/{id}:
+    delete:
+      tags: [Admin]
+      summary: Remove a listing (and its bids/messages)
+      parameters:
+        - $ref: "#/components/parameters/ListingId"
+      responses:
+        "200":
+          description: Removed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/listings/{id}/close:
+    post:
+      tags: [Admin]
+      summary: Force-close a listing regardless of its current status
+      description: >-
+        Takes the listing off the market immediately, whatever its status (live, pending
+        review, or rejected). Any still-pending bids are rejected and their bidders notified;
+        already-accepted bids and fee charges are left alone so that arrangement can still
+        complete. Unlike DELETE, the listing and its history are kept.
+      parameters:
+        - $ref: "#/components/parameters/ListingId"
+      responses:
+        "200":
+          description: Closed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Listing" }
+        "400":
+          description: Listing is already closed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Listing not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/users:
+    get:
+      tags: [Admin]
+      summary: List every user, for the "User List" admin page
+      description: Search is client-side over this full list (by name, email, or phone).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/users/{id}/suspend:
+    post:
+      tags: [Admin]
+      summary: Temporarily suspend a user's account until a given time
+      description: >-
+        Blocks all authenticated access (including the user's own postings) until untilMs
+        passes, at which point the account is lazily reactivated the next time it's touched.
+        Admins can't suspend themselves or other admin accounts.
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [untilMs]
+              properties:
+                untilMs: { type: integer, description: Unix ms timestamp in the future the suspension lifts at }
+                reason: { type: string, description: Optional, shown to the user }
+      responses:
+        "200":
+          description: Suspended
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400":
+          description: Invalid untilMs, target is an admin, target is self, or user not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/users/{id}/ban:
+    post:
+      tags: [Admin]
+      summary: Ban a user's account indefinitely
+      description: >-
+        Blocks all authenticated access until an admin explicitly reactivates the account.
+        Unlike DELETE, the account and its history are kept. Admins can't ban themselves or
+        other admin accounts.
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, description: Optional, shown to the user }
+      responses:
+        "200":
+          description: Banned
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400":
+          description: Target is an admin, target is self, or user not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/users/{id}/reactivate:
+    post:
+      tags: [Admin]
+      summary: Clear a suspension or ban and restore normal access
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: Reactivated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/users/{id}:
+    delete:
+      tags: [Admin]
+      summary: Permanently delete a user account and everything tied to it
+      description: >-
+        Cascades through the user's own postings (and those postings' bids/messages), their
+        bids on other people's postings, every message and notification involving them, and
+        every fee charge they were party to. Admins can't delete themselves or other admin
+        accounts.
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "400":
+          description: Target is an admin, target is self, or user not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/announcements:
+    post:
+      tags: [Admin]
+      summary: Broadcast an announcement — persists it and notifies every user
+      description: >-
+        Persists a durable Announcement row (shown on the public announcement board via
+        GET /api/announcements) and also posts the same content as a notification to every
+        registered user's inbox.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, body]
+              properties:
+                title: { type: string, minLength: 1, maxLength: 120 }
+                body: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "201":
+          description: Announcement sent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "400":
+          description: Invalid announcement
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/announcements:
+    get:
+      tags: [Public]
+      summary: List every admin announcement, newest first
+      description: Public — feeds the announcement board on the main page. No sign-in required.
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Announcement" }
+
+  /api/restricted-users:
+    get:
+      tags: [Public]
+      summary: List every currently suspended or banned user, with the reason
+      description: >-
+        Public — feeds the announcement board on the main page. No sign-in required. Deliberately
+        excludes email/phone/password (unlike GET /api/admin/users, which is admin-only). A
+        suspension whose end time has already passed is left out even if the DB hasn't lazily
+        flipped it back to "active" yet.
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: integer }
+                    name: { type: string }
+                    status: { type: string, enum: [suspended, banned] }
+                    restrictionReason: { type: string, nullable: true }
+                    suspendedUntil: { type: integer, nullable: true }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Session token returned by login/register-verify. Sent as
+        `Authorization: Bearer <token>`. Tokens are held in-memory server-side
+        and currently do not expire (see production-readiness notes).
+
+  parameters:
+    ListingId:
+      in: path
+      name: id
+      required: true
+      description: Listing id
+      schema: { type: integer }
+    UserId:
+      in: path
+      name: id
+      required: true
+      description: User id
+      schema: { type: integer }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        message: { type: string }
+
+    OkResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+
+    PendingOtpResult:
+      type: object
+      properties:
+        pendingToken: { type: string }
+        phone:
+          type: string
+          description: E.164 for registration; partially masked (e.g. "+65 9•••• 4567") for password reset.
+        expiresInSeconds: { type: integer }
+        devCode:
+          type: string
+          nullable: true
+          description: Only populated when WhatsApp isn't configured, so the flow still works end-to-end in dev.
+
+    RegisterStartInput:
+      type: object
+      required: [name, email, phone, password, confirmPassword]
+      properties:
+        name: { type: string, minLength: 1 }
+        email: { type: string, format: email }
+        phone: { type: string, minLength: 8, description: "Singapore mobile number" }
+        password: { type: string, minLength: 6 }
+        confirmPassword: { type: string, minLength: 6 }
+
+    AuthResult:
+      type: object
+      properties:
+        token: { type: string }
+        user: { $ref: "#/components/schemas/User" }
+
+    User:
+      type: object
+      description: Password hash is never included in API responses.
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string }
+        isAdmin: { type: boolean }
+        stripeCustomerId: { type: string, nullable: true }
+        status:
+          type: string
+          enum: [active, suspended, banned]
+          description: >-
+            "suspended" is temporary (see suspendedUntil) and is lazily lifted back to "active"
+            the next time the account is touched once that time passes. "banned" is indefinite
+            until an admin reactivates it. Either state blocks all authenticated access.
+        suspendedUntil:
+          type: integer
+          nullable: true
+          description: Unix ms timestamp the suspension lifts at. Only meaningful when status is "suspended".
+        restrictionReason:
+          type: string
+          nullable: true
+          description: Optional admin-supplied reason for the current suspension/ban, shown to the user.
+        createdAt: { type: integer, description: Unix ms timestamp }
+
+    Listing:
+      type: object
+      properties:
+        id: { type: integer }
+        userId: { type: integer }
+        type: { type: string, enum: [seek, offer] }
+        title: { type: string }
+        description: { type: string }
+        category: { type: string }
+        location:
+          type: string
+          description: One of the Singapore town/planning-area names (see SG_TOWNS).
+        price:
+          type: string
+          description: Free text, e.g. "$50", "$80-100", "Negotiable".
+        quantityNeeded: { type: integer, minimum: 1, maximum: 20 }
+        status: { type: string, enum: [pending, live, rejected, closed] }
+        rejectionReason: { type: string, nullable: true }
+        createdAt: { type: integer }
+
+    ListingWithOwner:
+      allOf:
+        - { $ref: "#/components/schemas/Listing" }
+        - type: object
+          properties:
+            ownerName: { type: string }
+
+    ListingWithBidFlag:
+      allOf:
+        - { $ref: "#/components/schemas/Listing" }
+        - type: object
+          properties:
+            hasBids:
+              type: boolean
+              description: True once the listing has any bid; drives the frontend edit-lock.
+            ownerName:
+              type: string
+              description: Poster's display name. Only included when the caller is an admin (this endpoint returns every user's listings for admins).
+            bids:
+              type: array
+              description: Full bid roster (bidder, amount, status) for this listing. Only included when the caller is an admin.
+              items:
+                type: object
+                properties:
+                  id: { type: integer }
+                  bidderId: { type: integer }
+                  bidderName: { type: string }
+                  amount: { type: number }
+                  status: { type: string, enum: [pending, accepted, rejected] }
+
+    ListingOffering:
+      allOf:
+        - { $ref: "#/components/schemas/Listing" }
+        - type: object
+          properties:
+            ownerName:
+              type: string
+              description: Display name of the listing's poster.
+            myBid:
+              type: object
+              properties:
+                id: { type: integer }
+                amount: { type: number }
+                status: { type: string, enum: [pending, accepted, rejected] }
+                message: { type: string, nullable: true }
+                createdAt: { type: integer }
+            fee:
+              type: object
+              description: Only present when this bid was accepted and a fee charge exists for it.
+              properties:
+                status: { type: string, enum: [pending, paid, failed] }
+                feeAmount: { type: number }
+                paidAt: { type: integer, nullable: true }
+
+    MyListingsResponse:
+      type: object
+      properties:
+        own:
+          type: array
+          items: { $ref: "#/components/schemas/ListingWithBidFlag" }
+        offering:
+          type: array
+          items: { $ref: "#/components/schemas/ListingOffering" }
+
+    InsertListing:
+      type: object
+      required: [type, title, description, category, location, price]
+      properties:
+        type: { type: string, enum: [seek, offer] }
+        title: { type: string, minLength: 4, maxLength: 80 }
+        description: { type: string, minLength: 10, maxLength: 1000 }
+        category: { type: string }
+        location: { type: string }
+        price: { type: string, minLength: 1, maxLength: 50 }
+        quantityNeeded: { type: integer, minimum: 1, maximum: 20, default: 1 }
+
+    InsertListingPatch:
+      allOf:
+        - { $ref: "#/components/schemas/InsertListing" }
+      description: All fields optional (partial update).
+
+    Bid:
+      type: object
+      properties:
+        id: { type: integer }
+        listingId: { type: integer }
+        bidderId: { type: integer }
+        amount: { type: number }
+        message: { type: string }
+        status: { type: string, enum: [pending, accepted, rejected] }
+        createdAt: { type: integer }
+
+    BidWithBidder:
+      allOf:
+        - { $ref: "#/components/schemas/Bid" }
+        - type: object
+          properties:
+            bidderName: { type: string }
+
+    InsertBid:
+      type: object
+      required: [amount]
+      properties:
+        amount: { type: number, exclusiveMinimum: 0 }
+        message: { type: string, default: "" }
+
+    Message:
+      type: object
+      description: content is server-masked (emails/phone numbers redacted) before being returned to any client.
+      properties:
+        id: { type: integer }
+        listingId: { type: integer }
+        senderId: { type: integer }
+        recipientId: { type: integer }
+        content: { type: string }
+        threadBidderId:
+          type: integer
+          nullable: true
+          description: >-
+            Only set on admin messages sent via POST /api/admin/listings/{id}/messages/thread.
+            Identifies which poster<->bidder thread this message belongs to, so both the poster
+            and that bidder see it in their conversation regardless of the literal recipientId.
+        createdAt: { type: integer }
+
+    FeeCharge:
+      type: object
+      properties:
+        id: { type: integer }
+        listingId: { type: integer }
+        bidId: { type: integer }
+        posterId: { type: integer }
+        providerId: { type: integer }
+        bidAmount: { type: number }
+        feeAmount:
+          type: number
+          description: Greater of S$5 or 10% of the bid amount.
+        status: { type: string, enum: [pending, paid, failed] }
+        createdAt: { type: integer }
+        paidAt: { type: integer, nullable: true }
+        stripePaymentIntentId: { type: string, nullable: true }
+        paymentMethod: { type: string, enum: [card, paynow, stripe], nullable: true }
+
+    Announcement:
+      type: object
+      description: A durable, public admin broadcast — shown on the main page's announcement board.
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        body: { type: string }
+        createdAt: { type: integer }
+
+    Notification:
+      type: object
+      properties:
+        id: { type: integer }
+        userId: { type: integer }
+        type:
+          type: string
+          enum:
+            [
+              new_posting_review,
+              new_bid,
+              bid_accepted,
+              bid_rejected,
+              fee_paid,
+              listing_approved,
+              listing_rejected,
+              announcement,
+            ]
+        title: { type: string }
+        body: { type: string }
+        relatedListingId: { type: integer, nullable: true }
+        read: { type: boolean }
+        createdAt: { type: integer }

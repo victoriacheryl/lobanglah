@@ -1,0 +1,133 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "86c46224-b011-4689-b9ac-2597c0075b32",
+  "prevId": "00000000-0000-0000-0000-000000000000",
+  "tables": {
+    "users": {
+      "name": "users",
+      "columns": {
+        "id": { "name": "id", "type": "integer", "primaryKey": true, "notNull": true, "autoincrement": true },
+        "name": { "name": "name", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "email": { "name": "email", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "phone": { "name": "phone", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "password": { "name": "password", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "is_admin": { "name": "is_admin", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false, "default": false },
+        "stripe_customer_id": { "name": "stripe_customer_id", "type": "text", "primaryKey": false, "notNull": false, "autoincrement": false },
+        "created_at": { "name": "created_at", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false }
+      },
+      "indexes": {
+        "users_email_unique": { "name": "users_email_unique", "columns": ["email"], "isUnique": true }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "listings": {
+      "name": "listings",
+      "columns": {
+        "id": { "name": "id", "type": "integer", "primaryKey": true, "notNull": true, "autoincrement": true },
+        "user_id": { "name": "user_id", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "type": { "name": "type", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "title": { "name": "title", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "description": { "name": "description", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "category": { "name": "category", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "location": { "name": "location", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "price": { "name": "price", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "quantity_needed": { "name": "quantity_needed", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false, "default": 1 },
+        "status": { "name": "status", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false, "default": "'pending'" },
+        "rejection_reason": { "name": "rejection_reason", "type": "text", "primaryKey": false, "notNull": false, "autoincrement": false },
+        "created_at": { "name": "created_at", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "bids": {
+      "name": "bids",
+      "columns": {
+        "id": { "name": "id", "type": "integer", "primaryKey": true, "notNull": true, "autoincrement": true },
+        "listing_id": { "name": "listing_id", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "bidder_id": { "name": "bidder_id", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "amount": { "name": "amount", "type": "real", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "message": { "name": "message", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false, "default": "''" },
+        "status": { "name": "status", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false, "default": "'pending'" },
+        "created_at": { "name": "created_at", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "messages": {
+      "name": "messages",
+      "columns": {
+        "id": { "name": "id", "type": "integer", "primaryKey": true, "notNull": true, "autoincrement": true },
+        "listing_id": { "name": "listing_id", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "sender_id": { "name": "sender_id", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "recipient_id": { "name": "recipient_id", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "content": { "name": "content", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "masked_content": { "name": "masked_content", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "created_at": { "name": "created_at", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "fee_charges": {
+      "name": "fee_charges",
+      "columns": {
+        "id": { "name": "id", "type": "integer", "primaryKey": true, "notNull": true, "autoincrement": true },
+        "listing_id": { "name": "listing_id", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "bid_id": { "name": "bid_id", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "poster_id": { "name": "poster_id", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "provider_id": { "name": "provider_id", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "bid_amount": { "name": "bid_amount", "type": "real", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "fee_amount": { "name": "fee_amount", "type": "real", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "status": { "name": "status", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false, "default": "'pending'" },
+        "created_at": { "name": "created_at", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "paid_at": { "name": "paid_at", "type": "integer", "primaryKey": false, "notNull": false, "autoincrement": false },
+        "stripe_payment_intent_id": { "name": "stripe_payment_intent_id", "type": "text", "primaryKey": false, "notNull": false, "autoincrement": false },
+        "payment_method": { "name": "payment_method", "type": "text", "primaryKey": false, "notNull": false, "autoincrement": false }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "notifications": {
+      "name": "notifications",
+      "columns": {
+        "id": { "name": "id", "type": "integer", "primaryKey": true, "notNull": true, "autoincrement": true },
+        "user_id": { "name": "user_id", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "type": { "name": "type", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "title": { "name": "title", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "body": { "name": "body", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "related_listing_id": { "name": "related_listing_id", "type": "integer", "primaryKey": false, "notNull": false, "autoincrement": false },
+        "read": { "name": "read", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false, "default": false },
+        "created_at": { "name": "created_at", "type": "integer", "primaryKey": false, "notNull": true, "autoincrement": false }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {}
+  }
+}

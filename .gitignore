@@ -1,0 +1,25 @@
+node_modules/
+dist/
+.vite/
+
+# SQLite database files — never commit; exposes demo data at rest
+data.db
+data.db-shm
+data.db-wal
+data.db-journal
+
+.env
+.env.*
+!.env.example
+
+*.log
+.DS_Store
+
+# Capacitor native build artifacts (not source) — regenerate via `npx cap sync`
+android/app/build/
+android/.gradle/
+android/capacitor-cordova-android-plugins/build/
+ios/App/Pods/
+ios/App/build/
+ios/App/DerivedData/
+*.xcuserstate
