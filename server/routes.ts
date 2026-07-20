@@ -546,8 +546,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/fees/:id/stripe-intent", requireAuth, async (req, res) => {
     try {
       if (!stripeEnabled) return res.status(400).json({ message: "Stripe is not configured" });
-      const clientSecret = await storage.getFeeChargeStripeClientSecret(Number(req.params.id), req.currentUser!.id);
-      res.json({ clientSecret });
+      const result = await storage.getFeeChargeStripeClientSecret(Number(req.params.id), req.currentUser!.id);
+      res.json(result);
     } catch (err: any) {
       res.status(400).json({ message: friendlyError(err, "Could not retrieve payment details") });
     }

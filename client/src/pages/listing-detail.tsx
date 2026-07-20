@@ -15,7 +15,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ShieldCheck, CheckCircle2, Send, HandCoins, MapPin, Phone, User as UserIcon, MessageSquare } from "lucide-react";
 import type { Listing, Bid, FeeCharge, Message } from "@shared/schema";
-import { StripeCheckoutDialog } from "@/components/stripe-checkout-dialog";
 import { PaymentMethodDialog } from "@/components/payment-method-dialog";
 
 type ListingWithOwner = Listing & { ownerName: string };
@@ -76,28 +75,56 @@ export default function ListingDetail() {
   const { data: config } = useQuery<{ stripePublishableKey: string | null }>({
     queryKey: ["/api/config"],
   });
-  const [checkout, setCheckout] = useState<{ clientSecret: string; amount: number } | null>(null);
   const [payDialogFee, setPayDialogFee] = useState<FeeCharge | null>(null);
+
+  // Opens a blank tab synchronously (must happen directly inside a click
+  // handler / onMutate, never after an `await`, or browsers will treat it as
+  // a pop-up and block it) and later points it at the real checkout URL once
+  // we know it. Only called when Stripe is actually configured — the
+  // simulated flow never needs a second tab.
+  function openBlankCheckoutTab(): Window | null {
+    return config?.stripePublishableKey ? window.open("", "_blank") : null;
+  }
+
+  function sendTabToCheckout(popup: Window | null, feeChargeId: number) {
+    if (popup) {
+      popup.location.href = `${window.location.origin}/#/checkout/${feeChargeId}`;
+    } else {
+      toast({
+        title: "Pop-up blocked",
+        description: "Allow pop-ups for this site, then use \"Pay now\" to complete the platform fee payment.",
+        variant: "destructive",
+      });
+    }
+  }
 
   const acceptMutation = useMutation({
     mutationFn: async (bidId: number) => {
       const res = await apiRequest("POST", `/api/bids/${bidId}/accept`, {});
       return res.json();
     },
-    onSuccess: (result: { clientSecret?: string; feeCharge: FeeCharge }) => {
+    // Runs synchronously as soon as .mutate() is called (before the network
+    // request resolves), which is what lets window.open() below still count
+    // as a direct response to the user's click instead of getting blocked.
+    onMutate: (): { popup: Window | null } => ({ popup: openBlankCheckoutTab() }),
+    onSuccess: (result: { clientSecret?: string; feeCharge: FeeCharge }, _bidId, context) => {
       queryClient.invalidateQueries({ queryKey: [`/api/listings/${listingId}`] });
       queryClient.invalidateQueries({ queryKey: [`/api/listings/${listingId}/bids`] });
       queryClient.invalidateQueries({ queryKey: [`/api/listings/${listingId}/fees`] });
       if (result.clientSecret) {
-        // Real Stripe checkout: open the PaymentElement to charge the platform fee.
-        setCheckout({ clientSecret: result.clientSecret, amount: result.feeCharge.feeAmount });
+        // Real Stripe checkout: pop the payment form out into its own tab.
+        sendTabToCheckout(context?.popup ?? null, result.feeCharge.id);
       } else {
+        context?.popup?.close();
         // Simulated flow: open the PayNow / Card payment-method dialog so the
         // poster settles the platform fee immediately, releasing contact details.
         setPayDialogFee(result.feeCharge);
       }
     },
-    onError: (err: any) => toast({ title: "Could not accept bid", description: err.message, variant: "destructive" }),
+    onError: (err: any, _bidId, context) => {
+      context?.popup?.close();
+      toast({ title: "Could not accept bid", description: err.message, variant: "destructive" });
+    },
   });
 
   const rejectMutation = useMutation({
@@ -112,37 +139,14 @@ export default function ListingDetail() {
     onError: (err: any) => toast({ title: "Could not reject bid", description: err.message, variant: "destructive" }),
   });
 
-  const syncMutation = useMutation({
-    mutationFn: async (paymentIntentId: string) => {
-      await apiRequest("POST", `/api/stripe/sync/${paymentIntentId}`, {});
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/listings/${listingId}`] });
-      queryClient.invalidateQueries({ queryKey: [`/api/listings/${listingId}/fees`] });
-      queryClient.invalidateQueries({ queryKey: [`/api/listings/${listingId}/bids`] });
-      toast({ title: "Platform fee charged", description: "Arrange payment for the job directly with the provider." });
-    },
-  });
-
   // "Pay now" retry: when Stripe is live, this must always reopen the real
-  // Stripe checkout on the same PaymentIntent — never the simulated
-  // PayNow/Card dialog, which would release contact details without ever
-  // charging the card.
-  const retryStripeMutation = useMutation({
-    mutationFn: async (feeChargeId: number) => {
-      const res = await apiRequest("GET", `/api/fees/${feeChargeId}/stripe-intent`, undefined);
-      return res.json();
-    },
-    onSuccess: (result: { clientSecret: string }, feeChargeId) => {
-      const feeCharge = feeCharges?.find((f) => f.id === feeChargeId);
-      if (feeCharge) setCheckout({ clientSecret: result.clientSecret, amount: feeCharge.feeAmount });
-    },
-    onError: (err: any) => toast({ title: "Could not reopen payment", description: err.message, variant: "destructive" }),
-  });
-
+  // Stripe checkout (now in its own tab) on the same PaymentIntent — never
+  // the simulated PayNow/Card dialog, which would release contact details
+  // without ever charging the card.
   function handlePayNow(feeCharge: FeeCharge) {
     if (config?.stripePublishableKey) {
-      retryStripeMutation.mutate(feeCharge.id);
+      const popup = openBlankCheckoutTab();
+      sendTabToCheckout(popup, feeCharge.id);
     } else {
       setPayDialogFee(feeCharge);
     }
@@ -221,20 +225,6 @@ export default function ListingDetail() {
             />
           ))}
         </div>
-      )}
-
-      {config?.stripePublishableKey && checkout && (
-        <StripeCheckoutDialog
-          open={!!checkout}
-          onOpenChange={(open) => !open && setCheckout(null)}
-          clientSecret={checkout.clientSecret}
-          publishableKey={config.stripePublishableKey}
-          amount={checkout.amount}
-          onAuthorized={(paymentIntentId) => {
-            setCheckout(null);
-            syncMutation.mutate(paymentIntentId);
-          }}
-        />
       )}
 
       {payDialogFee && (

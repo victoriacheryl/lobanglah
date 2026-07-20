@@ -16,6 +16,7 @@ import VerifyEmail from "@/pages/verify-email";
 import ForgotPassword from "@/pages/forgot-password";
 import PostListing from "@/pages/post-listing";
 import ListingDetail from "@/pages/listing-detail";
+import Checkout from "@/pages/checkout";
 import MyListings from "@/pages/my-listings";
 import Wallet from "@/pages/wallet";
 import Profile from "@/pages/profile";
@@ -32,6 +33,7 @@ function AppRouter() {
       <Route path="/forgot-password" component={ForgotPassword} />
       <Route path="/post" component={PostListing} />
       <Route path="/listings/:id" component={ListingDetail} />
+      <Route path="/checkout/:feeChargeId" component={Checkout} />
       <Route path="/my-listings" component={MyListings} />
       <Route path="/wallet" component={Wallet} />
       <Route path="/profile" component={Profile} />

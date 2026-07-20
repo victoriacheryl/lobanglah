@@ -545,7 +545,10 @@ export interface IStorage {
   getFeeChargesForUser(userId: number): Promise<FeeCharge[]>;
   getAllFeeCharges(): Promise<FeeCharge[]>;
   payFeeCharge(feeChargeId: number, posterId: number, method: "card" | "paynow"): Promise<FeeCharge>;
-  getFeeChargeStripeClientSecret(feeChargeId: number, posterId: number): Promise<string>;
+  getFeeChargeStripeClientSecret(
+    feeChargeId: number,
+    posterId: number
+  ): Promise<{ clientSecret: string; feeAmount: number; listingId: number }>;
   getBidContact(bidId: number, requestingUserId: number): Promise<{ posterName: string; posterPhone: string; providerName: string; providerPhone: string } | undefined>;
 
   // notifications
@@ -1038,14 +1041,18 @@ export class DatabaseStorage implements IStorage {
    *  errored), "Pay now" calls this to fetch that same PaymentIntent's client
    *  secret again so the Stripe checkout can be reopened — it never creates a
    *  new charge, and it never falls through to the simulated confirmation. */
-  async getFeeChargeStripeClientSecret(feeChargeId: number, posterId: number): Promise<string> {
+  async getFeeChargeStripeClientSecret(
+    feeChargeId: number,
+    posterId: number
+  ): Promise<{ clientSecret: string; feeAmount: number; listingId: number }> {
     const feeCharge = db.select().from(feeCharges).where(eq(feeCharges.id, feeChargeId)).get();
     if (!feeCharge) throw new Error("Fee charge not found");
     if (feeCharge.posterId !== posterId) throw new Error("Only the poster can pay this platform fee");
     if (feeCharge.status === "paid") throw new Error("This fee has already been paid");
     if (feeCharge.status === "failed") throw new Error("This fee charge failed — accept the bid again to retry");
     if (!feeCharge.stripePaymentIntentId) throw new Error("No Stripe payment is associated with this fee charge");
-    return retrieveClientSecret(feeCharge.stripePaymentIntentId);
+    const clientSecret = await retrieveClientSecret(feeCharge.stripePaymentIntentId);
+    return { clientSecret, feeAmount: feeCharge.feeAmount, listingId: feeCharge.listingId };
   }
 
   /** Returns both parties' names/phone numbers for an accepted bid, but only once
