@@ -94,11 +94,14 @@ function buildMonthlySummary(paid: FeeCharge[], received: FeeCharge[]): MonthlyR
     row.spendCount += 1;
     row.spendTotal += f.feeAmount;
   }
-  // Earnings: bids of yours that were accepted (i.e. closed), grouped by
-  // acceptance date — the job amount is settled directly with the poster,
-  // so this is the closest on-platform record of what you've earned.
+  // Earnings: bids of yours that were accepted AND closed — i.e. the
+  // poster actually paid the platform fee, not just accepted the bid —
+  // grouped by when the fee was paid. The job amount itself is settled
+  // directly with the poster, so this is the closest on-platform record of
+  // what you've earned.
   for (const f of received) {
-    const row = ensure(monthKey(f.createdAt));
+    if (f.status !== "paid") continue;
+    const row = ensure(monthKey(f.paidAt ?? f.createdAt));
     row.earnCount += 1;
     row.earnTotal += f.bidAmount;
   }

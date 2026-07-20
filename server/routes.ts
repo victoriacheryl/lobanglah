@@ -23,6 +23,7 @@ import {
   verifyEmailLinkSchema,
   insertListingSchema,
   insertBidSchema,
+  bidUpdateSchema,
   adminUpdateBidSchema,
   payFeeChargeSchema,
   createAnnouncementSchema,
@@ -540,9 +541,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Bidder self-service: edit their own bid's amount/message while it's
+  // still pending.
+  app.patch("/api/bids/:id", requireAuth, async (req, res) => {
+    try {
+      const patch = bidUpdateSchema.parse(req.body);
+      const updated = await storage.updateBid(Number(req.params.id), req.currentUser!.id, patch);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(400).json({ message: friendlyError(err, "Could not update bid") });
+    }
+  });
+
+  // Bidder self-service: withdraw their own pending bid — kept on record
+  // (status "cancelled") rather than erased, unlike an admin delete.
+  app.post("/api/bids/:id/cancel", requireAuth, async (req, res) => {
+    try {
+      const updated = await storage.cancelBid(Number(req.params.id), req.currentUser!.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(400).json({ message: friendlyError(err, "Could not cancel bid") });
+    }
+  });
+
+  // Bidder self-service: ask an admin to reopen their own cancelled bid —
+  // only an admin can actually reopen it (see /api/admin/bids/:id/reopen).
+  app.post("/api/bids/:id/request-reopen", requireAuth, async (req, res) => {
+    try {
+      const updated = await storage.requestReopenBid(Number(req.params.id), req.currentUser!.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(400).json({ message: friendlyError(err, "Could not send request") });
+    }
+  });
+
   // Admin moderation: correct a bid's amount/message on the bidder's behalf.
-  // Doesn't touch status — accept/reject remain the only way a bid's
-  // lifecycle advances.
+  // Doesn't touch status — accept/reject/cancel/reopen remain the only way a
+  // bid's lifecycle advances.
   app.patch("/api/admin/bids/:id", requireAuth, requireAdmin, async (req, res) => {
     try {
       const patch = adminUpdateBidSchema.parse(req.body);
@@ -551,6 +586,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json(updated);
     } catch (err: any) {
       res.status(400).json({ message: friendlyError(err, "Could not update bid") });
+    }
+  });
+
+  // Admin moderation: cancel a bid — kept on record (status "cancelled") so
+  // it can be reopened later, unlike a hard delete.
+  app.post("/api/admin/bids/:id/cancel", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const updated = await storage.adminCancelBid(Number(req.params.id));
+      res.json(updated);
+    } catch (err: any) {
+      res.status(400).json({ message: friendlyError(err, "Could not cancel bid") });
+    }
+  });
+
+  // Admin moderation: put a cancelled bid back to pending.
+  app.post("/api/admin/bids/:id/reopen", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const updated = await storage.adminReopenBid(Number(req.params.id));
+      res.json(updated);
+    } catch (err: any) {
+      res.status(400).json({ message: friendlyError(err, "Could not reopen bid") });
     }
   });
 
@@ -705,11 +761,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(rows);
   });
 
-  // Admin wallet: every fee charge platform-wide (i.e. every accepted/"closed"
-  // bid), enriched with listing/poster/provider names, so the admin wallet
-  // can group transactions by week and month without extra round-trips.
+  // Admin wallet: every *paid* fee charge platform-wide (i.e. every bid
+  // that's actually closed — accepting a bid alone only starts a fee charge,
+  // it isn't "closed" until the platform fee is paid), enriched with
+  // listing/poster/provider names, so the admin wallet can group
+  // transactions by week and month without extra round-trips.
   app.get("/api/admin/wallet/transactions", requireAuth, requireAdmin, async (req, res) => {
-    const rows = await storage.getAllFeeCharges();
+    const rows = (await storage.getAllFeeCharges()).filter((f) => f.status === "paid");
     const listingIds = Array.from(new Set(rows.map((f) => f.listingId)));
     const userIds = Array.from(new Set(rows.flatMap((f) => [f.posterId, f.providerId])));
     const listingTitles = new Map<number, string>();

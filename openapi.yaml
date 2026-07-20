@@ -705,14 +705,115 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/bids/{id}:
+    patch:
+      tags: [Bids]
+      summary: Bidder self-service — edit their own bid's amount/message
+      description: >
+        Only the bidder who placed it may edit, and only while it's still
+        pending — once accepted, rejected, or cancelled, an admin is
+        required instead.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Bid id
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount: { type: number }
+                message: { type: string }
+      responses:
+        "200":
+          description: Bid updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Bid" }
+        "400":
+          description: Not your bid, or bid not pending
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/bids/{id}/cancel:
+    post:
+      tags: [Bids]
+      summary: Bidder self-service — withdraw their own pending bid
+      description: >
+        Kept on record with status "cancelled" rather than erased — the
+        bidder can later ask an admin to reopen it (see
+        /api/bids/{id}/request-reopen).
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Bid id
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Bid cancelled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Bid" }
+        "400":
+          description: Not your bid, or bid not pending
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/bids/{id}/request-reopen:
+    post:
+      tags: [Bids]
+      summary: Bidder self-service — ask an admin to reopen a cancelled bid
+      description: >
+        The bidder can't reopen it themselves — this just flags it and
+        notifies every admin, who can then reopen it via
+        /api/admin/bids/{id}/reopen.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Bid id
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Reopen requested
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Bid" }
+        "400":
+          description: Not your bid, bid not cancelled, or already requested
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/admin/bids/{id}:
     patch:
       tags: [Admin]
       summary: Admin-only — correct a bid's amount/message
       description: >
-        Doesn't touch status — accept/reject remain the only way a bid's
-        lifecycle advances. Refuses to change the amount once the bid's
-        platform fee has already been paid.
+        Doesn't touch status — accept/reject/cancel/reopen remain the only
+        way a bid's lifecycle advances. Refuses to change the amount once
+        the bid's platform fee has already been paid.
       security:
         - bearerAuth: []
       parameters:
@@ -778,6 +879,80 @@ paths:
               schema: { $ref: "#/components/schemas/OkResult" }
         "400":
           description: Bid not found, or fee already paid
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/bids/{id}/cancel:
+    post:
+      tags: [Admin]
+      summary: Admin-only — cancel a bid
+      description: >
+        Kept on record with status "cancelled" (unlike DELETE, which erases
+        it) so it can be reopened later. Distinct from reject, which is the
+        poster's own decision on a bid they reviewed. Refuses once the bid's
+        platform fee has already been paid.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Bid id
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Bid cancelled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Bid" }
+        "400":
+          description: Already cancelled, or fee already paid
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/bids/{id}/reopen:
+    post:
+      tags: [Admin]
+      summary: Admin-only — reopen a cancelled bid
+      description: Puts a cancelled bid back to "pending" so the poster can consider it again.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Bid id
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Bid reopened
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Bid" }
+        "400":
+          description: Bid not cancelled
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -890,11 +1065,12 @@ paths:
   /api/admin/wallet/transactions:
     get:
       tags: [Admin]
-      summary: Every fee charge platform-wide, for the admin wallet's transaction history
+      summary: Every paid fee charge platform-wide, for the admin wallet's transaction history
       description: >-
-        Each fee charge corresponds 1:1 to a bid that was accepted, so this doubles as the full
-        list of "closed bids transacted" on the platform. Enriched with listingTitle,
-        posterName, and providerName so the admin wallet can group by week/month client-side.
+        Only fee charges with status "paid" are returned — accepting a bid alone only starts a
+        fee charge, it isn't a "closed bid" until the platform fee is actually paid. Enriched
+        with listingTitle, posterName, and providerName so the admin wallet can group by
+        week/month client-side.
       responses:
         "200":
           description: OK
@@ -2023,7 +2199,10 @@ components:
         bidderId: { type: integer }
         amount: { type: number }
         message: { type: string }
-        status: { type: string, enum: [pending, accepted, rejected] }
+        status: { type: string, enum: [pending, accepted, rejected, cancelled] }
+        reopenRequested:
+          type: boolean
+          description: Set when the bidder has asked an admin to reopen this cancelled bid.
         createdAt: { type: integer }
 
     BidWithBidder:
@@ -2099,6 +2278,9 @@ components:
               bid_accepted,
               bid_rejected,
               bid_removed,
+              bid_cancelled,
+              bid_reopened,
+              bid_reopen_requested,
               new_message,
               fee_paid,
               listing_approved,
