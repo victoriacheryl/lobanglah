@@ -497,6 +497,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Retry entry point for the real-payments flow. If the poster closed the
+  // Stripe checkout before confirming right after accepting a bid, the
+  // frontend's "Pay now" button calls this (instead of /api/fees/:id/pay) to
+  // get that same PaymentIntent's client secret again and reopen the real
+  // Stripe checkout — so a stalled payment can never be waved through by the
+  // simulated confirmation route above once Stripe is live.
+  app.get("/api/fees/:id/stripe-intent", requireAuth, async (req, res) => {
+    try {
+      if (!stripeEnabled) return res.status(400).json({ message: "Stripe is not configured" });
+      const clientSecret = await storage.getFeeChargeStripeClientSecret(Number(req.params.id), req.currentUser!.id);
+      res.json({ clientSecret });
+    } catch (err: any) {
+      res.status(400).json({ message: friendlyError(err, "Could not retrieve payment details") });
+    }
+  });
+
   // Contact details (phone numbers) for an accepted bid — only returned once the
   // platform fee has been paid, and only to the poster or the accepted provider.
   app.get("/api/bids/:id/contact", requireAuth, async (req, res) => {

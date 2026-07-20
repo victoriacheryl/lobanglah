@@ -65,6 +65,11 @@ function CheckoutForm({
     setError(null);
     const { error: confirmError, paymentIntent } = await stripe.confirmPayment({
       elements,
+      // Card confirms inline and never needs this, but redirect-based methods
+      // (PayNow, bank redirects, etc.) require a return_url even when
+      // redirect is "if_required" — without one Stripe can't hand control
+      // back to the app after the out-of-band confirmation step.
+      confirmParams: { return_url: window.location.href },
       redirect: "if_required",
     });
     setSubmitting(false);

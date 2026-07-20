@@ -26,7 +26,7 @@ import { eq, and, or, desc } from "drizzle-orm";
 import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
-import { stripeEnabled, calculateFeeSgd } from "./stripe";
+import { stripeEnabled, calculateFeeSgd, retrieveClientSecret } from "./stripe";
 import * as stripeStorage from "./stripe-storage";
 import { sendWhatsappOtp, normalizeSgPhone, generateOtpCode, whatsappEnabled } from "./whatsapp";
 
@@ -439,6 +439,7 @@ export interface IStorage {
   getFeeChargesForUser(userId: number): Promise<FeeCharge[]>;
   getAllFeeCharges(): Promise<FeeCharge[]>;
   payFeeCharge(feeChargeId: number, posterId: number, method: "card" | "paynow"): Promise<FeeCharge>;
+  getFeeChargeStripeClientSecret(feeChargeId: number, posterId: number): Promise<string>;
   getBidContact(bidId: number, requestingUserId: number): Promise<{ posterName: string; posterPhone: string; providerName: string; providerPhone: string } | undefined>;
 
   // notifications
@@ -886,6 +887,13 @@ export class DatabaseStorage implements IStorage {
    *  Simulated payment confirmation (no real gateway wired up yet) — marks the fee
    *  "paid" immediately so contact details can be released to both parties. */
   async payFeeCharge(feeChargeId: number, posterId: number, method: "card" | "paynow"): Promise<FeeCharge> {
+    // Guard against the simulated flow ever being used to "pay" a fee once
+    // Stripe is live — without this, a poster who closes the real Stripe
+    // checkout partway through could hit this route directly and get
+    // contact details released without any money actually changing hands.
+    if (stripeEnabled) {
+      throw new Error("Stripe is live for this listing — pay via the card/PayNow checkout, not this simulated confirmation.");
+    }
     const feeCharge = db.select().from(feeCharges).where(eq(feeCharges.id, feeChargeId)).get();
     if (!feeCharge) throw new Error("Fee charge not found");
     if (feeCharge.posterId !== posterId) throw new Error("Only the poster can pay this platform fee");
@@ -917,6 +925,21 @@ export class DatabaseStorage implements IStorage {
     );
 
     return updated;
+  }
+
+  /** Retry entry point for the real-payments flow: if the poster closed the
+   *  Stripe modal before confirming right after accepting a bid (or it
+   *  errored), "Pay now" calls this to fetch that same PaymentIntent's client
+   *  secret again so the Stripe checkout can be reopened — it never creates a
+   *  new charge, and it never falls through to the simulated confirmation. */
+  async getFeeChargeStripeClientSecret(feeChargeId: number, posterId: number): Promise<string> {
+    const feeCharge = db.select().from(feeCharges).where(eq(feeCharges.id, feeChargeId)).get();
+    if (!feeCharge) throw new Error("Fee charge not found");
+    if (feeCharge.posterId !== posterId) throw new Error("Only the poster can pay this platform fee");
+    if (feeCharge.status === "paid") throw new Error("This fee has already been paid");
+    if (feeCharge.status === "failed") throw new Error("This fee charge failed — accept the bid again to retry");
+    if (!feeCharge.stripePaymentIntentId) throw new Error("No Stripe payment is associated with this fee charge");
+    return retrieveClientSecret(feeCharge.stripePaymentIntentId);
   }
 
   /** Returns both parties' names/phone numbers for an accepted bid, but only once

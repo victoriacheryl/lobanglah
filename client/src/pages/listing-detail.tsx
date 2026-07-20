@@ -124,6 +124,30 @@ export default function ListingDetail() {
     },
   });
 
+  // "Pay now" retry: when Stripe is live, this must always reopen the real
+  // Stripe checkout on the same PaymentIntent — never the simulated
+  // PayNow/Card dialog, which would release contact details without ever
+  // charging the card.
+  const retryStripeMutation = useMutation({
+    mutationFn: async (feeChargeId: number) => {
+      const res = await apiRequest("GET", `/api/fees/${feeChargeId}/stripe-intent`, undefined);
+      return res.json();
+    },
+    onSuccess: (result: { clientSecret: string }, feeChargeId) => {
+      const feeCharge = feeCharges?.find((f) => f.id === feeChargeId);
+      if (feeCharge) setCheckout({ clientSecret: result.clientSecret, amount: feeCharge.feeAmount });
+    },
+    onError: (err: any) => toast({ title: "Could not reopen payment", description: err.message, variant: "destructive" }),
+  });
+
+  function handlePayNow(feeCharge: FeeCharge) {
+    if (config?.stripePublishableKey) {
+      retryStripeMutation.mutate(feeCharge.id);
+    } else {
+      setPayDialogFee(feeCharge);
+    }
+  }
+
   if (isLoading) {
     return (
       <div className="mx-auto max-w-3xl px-4 py-10 space-y-4">
@@ -193,7 +217,7 @@ export default function ListingDetail() {
               key={fc.id}
               feeCharge={fc}
               isPoster={isOwner}
-              onPayNow={() => setPayDialogFee(fc)}
+              onPayNow={() => handlePayNow(fc)}
             />
           ))}
         </div>

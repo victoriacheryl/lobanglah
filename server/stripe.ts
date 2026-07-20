@@ -99,6 +99,20 @@ export async function getPaymentIntentStatus(paymentIntentId: string): Promise<S
   return intent.status;
 }
 
+/**
+ * Re-fetches the client secret for an existing PaymentIntent that hasn't
+ * succeeded yet — used when the poster reopens the checkout after not
+ * completing it the first time (closed the modal, connection dropped,
+ * etc.). Does not create a new charge or a new PaymentIntent.
+ */
+export async function retrieveClientSecret(paymentIntentId: string): Promise<string> {
+  const intent = await requireStripe().paymentIntents.retrieve(paymentIntentId);
+  if (intent.status === "succeeded") throw new Error("This fee has already been paid");
+  if (intent.status === "canceled") throw new Error("This payment was canceled — accept the bid again to retry");
+  if (!intent.client_secret) throw new Error("This payment can no longer be retried — accept the bid again");
+  return intent.client_secret;
+}
+
 export function constructWebhookEvent(rawBody: Buffer, signature: string): Stripe.Event {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
   if (!secret) throw new Error("STRIPE_WEBHOOK_SECRET is not configured");
