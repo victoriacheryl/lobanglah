@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Elements, CardElement, useStripe, useElements } from "@stripe/react-stripe-js";
+import {
+  Elements,
+  CardNumberElement,
+  CardExpiryElement,
+  CardCvcElement,
+  useStripe,
+  useElements,
+} from "@stripe/react-stripe-js";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getStripe } from "@/lib/stripe";
 import { useAuth } from "@/lib/auth";
@@ -29,16 +36,28 @@ interface StripeIntentResult {
  * a charge is pending, so it picks up the "paid" status on its own shortly
  * after this tab reports success.
  *
- * Layout: PayNow QR code up top (fired automatically on load, no button
- * press needed to see it), plain Stripe card fields below as the
- * alternative. PayNow is confirmed directly via stripe.confirmPayNowPayment
- * rather than <PaymentElement /> — Payment Element decides which methods to
- * surface using its own IP-derived customer-country check, separate from
- * whatever's allowed on the PaymentIntent itself, and that check has been
- * unreliable for PayNow even from genuinely Singapore-based connections.
- * Calling stripe.confirmPayNowPayment directly (Stripe's "Direct API"
- * integration) always shows the QR code regardless of that check. Card
- * still goes through the plain CardElement + stripe.confirmCardPayment,
+ * Layout: PayNow QR code rendered inline, right on the page, the moment it
+ * loads — no button press, and no Stripe-hosted popup/modal. Split
+ * card-number/expiry/CVC fields (Stripe's classic Checkout-style layout)
+ * below as the alternative.
+ *
+ * PayNow is confirmed via stripe.confirmPayNowPayment with
+ * `handleActions: false` rather than letting Stripe.js manage it — by
+ * default that call pops its own modal dialog with the QR code, which is
+ * the "window" this was built to avoid. With handleActions disabled, the
+ * call instead returns the PaymentIntent's `next_action.paynow_display_qr_code`
+ * object (image_url_png/svg + the raw QR data), which is rendered directly
+ * as an <img> in the page layout, then polled via
+ * stripe.retrievePaymentIntent until the customer's bank confirms.
+ *
+ * PayNow is also NOT shown via <PaymentElement /> — that component decides
+ * which payment methods to surface using its own IP-derived customer-country
+ * check, separate from whatever's allowed on the PaymentIntent itself, and
+ * that check has been unreliable for PayNow even from genuinely
+ * Singapore-based connections. Calling stripe.confirmPayNowPayment directly
+ * always renders the QR code regardless of that check.
+ *
+ * Card still goes through split Card elements + stripe.confirmCardPayment,
  * which never had this problem — Card is never geo-filtered.
  */
 export default function Checkout() {
@@ -125,21 +144,27 @@ export default function Checkout() {
   );
 }
 
-// CardElement renders inside its own cross-origin iframe, so it can't read
-// this page's CSS custom properties — colors have to be literal values that
-// roughly match --foreground / --muted-foreground for each theme (see
-// index.css), otherwise the text is unreadable (e.g. dark-on-dark).
-const CARD_ELEMENT_COLORS: Record<"light" | "dark", { text: string; placeholder: string }> = {
-  light: { text: "#242a3d", placeholder: "#8890a3" },
-  dark: { text: "#e8eaf3", placeholder: "#a3a8b8" },
+// Split Card elements render inside their own cross-origin iframes, so they
+// can't read this page's CSS custom properties — colors have to be literal
+// values that roughly match --foreground / --muted-foreground for each
+// theme (see index.css), otherwise the text is unreadable (e.g. dark-on-dark).
+const CARD_ELEMENT_COLORS: Record<"light" | "dark", { text: string; placeholder: string; icon: string }> = {
+  light: { text: "#242a3d", placeholder: "#8890a3", icon: "#6b7280" },
+  dark: { text: "#e8eaf3", placeholder: "#a3a8b8", icon: "#a3a8b8" },
 };
+
+interface PayNowQrCode {
+  imageUrl: string;
+  hostedInstructionsUrl?: string;
+}
 
 function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSecret: string }) {
   const stripe = useStripe();
   const elements = useElements();
   const { theme } = useTheme();
   const [cardSubmitting, setCardSubmitting] = useState(false);
-  const [payNowSubmitting, setPayNowSubmitting] = useState(false);
+  const [payNowLoading, setPayNowLoading] = useState(false);
+  const [payNowQr, setPayNowQr] = useState<PayNowQrCode | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [succeeded, setSucceeded] = useState(false);
   const payNowFiredRef = useRef(false);
@@ -162,12 +187,12 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
 
   async function handlePayCard() {
     if (!stripe || !elements) return;
-    const cardElement = elements.getElement(CardElement);
-    if (!cardElement) return;
+    const cardNumberElement = elements.getElement(CardNumberElement);
+    if (!cardNumberElement) return;
     setCardSubmitting(true);
     setError(null);
     const { error: confirmError, paymentIntent } = await stripe.confirmCardPayment(clientSecret, {
-      payment_method: { card: cardElement },
+      payment_method: { card: cardNumberElement },
     });
     setCardSubmitting(false);
     if (confirmError) {
@@ -181,40 +206,65 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
     }
   }
 
-  async function handlePayNow() {
+  async function loadPayNowQr() {
     if (!stripe) return;
-    setPayNowSubmitting(true);
+    setPayNowLoading(true);
     setError(null);
-    // Shows Stripe's own modal with the PayNow QR code and resolves once the
-    // customer scans it and their bank confirms (or they close the modal).
+    // handleActions: false stops Stripe.js from popping its own modal dialog
+    // for the QR code — instead it hands back the PaymentIntent with the QR
+    // image URL in next_action, which we render inline ourselves below.
     // Unlike confirmCardPayment, this call doesn't auto-create a payment
     // method from nothing — it needs an explicit (even empty) payment_method
     // object, or Stripe rejects it with "none was provided".
-    const { error: confirmError, paymentIntent } = await stripe.confirmPayNowPayment(clientSecret, {
-      payment_method: {},
-    });
-    setPayNowSubmitting(false);
+    const { error: confirmError, paymentIntent } = await stripe.confirmPayNowPayment(
+      clientSecret,
+      { payment_method: {} },
+      { handleActions: false }
+    );
+    setPayNowLoading(false);
     if (confirmError) {
-      setError(confirmError.message || "PayNow payment wasn't completed. Please try again.");
+      setError(confirmError.message || "Could not load the PayNow QR code. Please try again.");
       return;
     }
-    if (paymentIntent && paymentIntent.status === "succeeded") {
+    if (paymentIntent?.status === "succeeded") {
       finalize(paymentIntent.id);
+      return;
     }
-    // If neither succeeded nor errored, the customer just closed the QR
-    // modal without paying — leave the "Show PayNow QR code" button so they
-    // can bring it back up whenever they're ready, no error shown.
+    // paynow_display_qr_code isn't in this SDK version's TS types yet, even
+    // though it's a documented, stable field on the PaymentIntent's
+    // next_action — see server/stripe.ts docblock reasoning for PayNow.
+    const qrCode = (paymentIntent as any)?.next_action?.paynow_display_qr_code;
+    if (qrCode?.image_url_png) {
+      setPayNowQr({ imageUrl: qrCode.image_url_png, hostedInstructionsUrl: qrCode.hosted_instructions_url });
+    } else {
+      setError("Could not load the PayNow QR code. Please try again.");
+    }
   }
 
-  // Show the PayNow QR code immediately on load — no button press needed —
-  // the moment Stripe.js is ready. The guard ref keeps this from firing
-  // twice (e.g. React re-renders) since each call opens a new QR modal.
+  // Load the PayNow QR code immediately on page load — no button press
+  // needed — the moment Stripe.js is ready. The guard ref keeps this from
+  // firing twice (e.g. React re-renders).
   useEffect(() => {
     if (!stripe || payNowFiredRef.current) return;
     payNowFiredRef.current = true;
-    handlePayNow();
+    loadPayNowQr();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stripe]);
+
+  // While a QR code is showing, poll Stripe directly (not our own backend)
+  // every 3s to notice as soon as the customer's bank confirms the payment —
+  // this tab never gets a redirect back, so nothing else would tell it.
+  useEffect(() => {
+    if (!payNowQr || !stripe || succeeded) return;
+    const interval = setInterval(async () => {
+      const { paymentIntent } = await stripe.retrievePaymentIntent(clientSecret);
+      if (paymentIntent?.status === "succeeded") {
+        finalize(paymentIntent.id);
+      }
+    }, 3000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payNowQr, stripe, succeeded, clientSecret]);
 
   if (succeeded) {
     return (
@@ -231,43 +281,81 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
     );
   }
 
+  const elementStyle = {
+    base: {
+      fontSize: "16px",
+      color: CARD_ELEMENT_COLORS[theme].text,
+      iconColor: CARD_ELEMENT_COLORS[theme].icon,
+      "::placeholder": { color: CARD_ELEMENT_COLORS[theme].placeholder },
+    },
+  };
+
   return (
     <div className="space-y-6">
       <div className="space-y-3">
         <div className="flex items-center gap-1.5 text-sm font-medium">
           <QrCode className="h-4 w-4" /> Pay with PayNow
         </div>
-        <p className="text-sm text-muted-foreground" data-testid="text-paynow-hint">
-          Scan the QR code with your banking or payment app to complete this payment.
-        </p>
-        <Button
-          className="w-full"
-          variant="outline"
-          onClick={handlePayNow}
-          disabled={!stripe || payNowSubmitting}
-          data-testid="button-confirm-paynow"
-        >
-          {payNowSubmitting ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : null}
-          {payNowSubmitting ? "Opening QR code..." : "Show PayNow QR code"}
-        </Button>
+
+        {payNowLoading && !payNowQr && (
+          <div className="flex flex-col items-center gap-2 py-4">
+            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">Loading QR code...</p>
+          </div>
+        )}
+
+        {payNowQr && (
+          <div className="flex flex-col items-center gap-2 rounded-lg border border-border p-4">
+            <img
+              src={payNowQr.imageUrl}
+              alt="PayNow QR code"
+              className="h-48 w-48 rounded-md bg-white p-2"
+              data-testid="img-paynow-qr"
+            />
+            <p className="text-sm text-muted-foreground text-center">
+              Scan this with your banking or payment app to complete this payment.
+            </p>
+          </div>
+        )}
+
+        {!payNowLoading && !payNowQr && (
+          <Button
+            className="w-full"
+            variant="outline"
+            onClick={loadPayNowQr}
+            disabled={!stripe}
+            data-testid="button-confirm-paynow"
+          >
+            Show PayNow QR code
+          </Button>
+        )}
       </div>
 
       <div className="h-px bg-border" />
 
       <div className="space-y-3">
         <div className="text-sm font-medium">Pay with card</div>
-        <div className="rounded-lg border border-border p-3">
-          <CardElement
-            options={{
-              style: {
-                base: {
-                  fontSize: "16px",
-                  color: CARD_ELEMENT_COLORS[theme].text,
-                  "::placeholder": { color: CARD_ELEMENT_COLORS[theme].placeholder },
-                },
-              },
-            }}
-          />
+        <div className="space-y-2 rounded-lg border border-border p-3">
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">Card number</label>
+            <div className="rounded-md border border-border px-3 py-2">
+              <CardNumberElement options={{ style: elementStyle }} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">Expiry</label>
+              <div className="rounded-md border border-border px-3 py-2">
+                <CardExpiryElement options={{ style: elementStyle }} />
+              </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">CVC</label>
+              <div className="rounded-md border border-border px-3 py-2">
+                <CardCvcElement options={{ style: elementStyle }} />
+              </div>
+            </div>
+          </div>
         </div>
         <Button
           className="w-full"
