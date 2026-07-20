@@ -190,7 +190,12 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
     setAwaitingPayNowScan(true);
     // Shows Stripe's own modal with the PayNow QR code and resolves once the
     // customer scans it and their bank confirms (or they close the modal).
-    const { error: confirmError, paymentIntent } = await stripe.confirmPayNowPayment(clientSecret);
+    // Unlike confirmCardPayment, this call doesn't auto-create a payment
+    // method from nothing — it needs an explicit (even empty) payment_method
+    // object, or Stripe rejects it with "none was provided".
+    const { error: confirmError, paymentIntent } = await stripe.confirmPayNowPayment(clientSecret, {
+      payment_method: {},
+    });
     setSubmitting(false);
     setAwaitingPayNowScan(false);
     if (confirmError) {
