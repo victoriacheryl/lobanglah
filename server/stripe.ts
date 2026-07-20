@@ -68,7 +68,12 @@ export async function createFeeChargePaymentIntent(params: {
     amount: toCents(feeSgd),
     currency: CURRENCY,
     customer: params.customerId,
-    automatic_payment_methods: { enabled: true },
+    // Pinned explicitly instead of automatic_payment_methods: Stripe's
+    // dynamic eligibility engine can silently omit PayNow even when it's
+    // enabled in the Dashboard (it factors in session/device signals beyond
+    // just currency + Dashboard config), so listing both methods by name
+    // guarantees Card and PayNow always both appear in the Payment Element.
+    payment_method_types: ["card", "paynow"],
     metadata: {
       lobangListingId: String(params.listingId),
       lobangBidId: String(params.bidId),
@@ -106,11 +111,28 @@ export async function getPaymentIntentStatus(paymentIntentId: string): Promise<S
  * etc.). Does not create a new charge or a new PaymentIntent.
  */
 export async function retrieveClientSecret(paymentIntentId: string): Promise<string> {
-  const intent = await requireStripe().paymentIntents.retrieve(paymentIntentId);
+  let intent = await requireStripe().paymentIntents.retrieve(paymentIntentId);
   if (intent.status === "succeeded") throw new Error("This fee has already been paid");
   if (intent.status === "canceled") throw new Error("This payment was canceled — accept the bid again to retry");
   if (!intent.client_secret) throw new Error("This payment can no longer be retried — accept the bid again");
-  return intent.client_secret;
+  // Older PaymentIntents (created before payment_method_types was pinned
+  // explicitly) may still be on automatic_payment_methods and missing
+  // PayNow — try to patch them on the way out so reopening checkout shows
+  // both methods, without needing to cancel and recreate the intent. Stripe
+  // doesn't guarantee this switch is allowed post-creation, so this is a
+  // best-effort upgrade: if it fails, fall back to the original secret
+  // rather than blocking the payment entirely.
+  if (!intent.payment_method_types?.includes("paynow")) {
+    try {
+      intent = await requireStripe().paymentIntents.update(paymentIntentId, {
+        payment_method_types: ["card", "paynow"],
+      });
+    } catch {
+      // Ignore — this PaymentIntent will just show whatever methods it was
+      // originally created with (e.g. Card only via automatic_payment_methods).
+    }
+  }
+  return intent.client_secret as string;
 }
 
 export function constructWebhookEvent(rawBody: Buffer, signature: string): Stripe.Event {
