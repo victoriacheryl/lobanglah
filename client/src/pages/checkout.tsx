@@ -1,14 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import {
-  Elements,
-  CardNumberElement,
-  CardExpiryElement,
-  CardCvcElement,
-  useStripe,
-  useElements,
-} from "@stripe/react-stripe-js";
+import { Elements, PaymentElement, useStripe, useElements } from "@stripe/react-stripe-js";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getStripe } from "@/lib/stripe";
 import { useAuth } from "@/lib/auth";
@@ -37,9 +30,9 @@ interface StripeIntentResult {
  * after this tab reports success.
  *
  * Layout: PayNow QR code rendered inline, right on the page, the moment it
- * loads — no button press, and no Stripe-hosted popup/modal. Split
- * card-number/expiry/CVC fields (Stripe's classic Checkout-style layout)
- * below as the alternative.
+ * loads — no button press, and no Stripe-hosted popup/modal — with the
+ * original <PaymentElement /> card form (Stripe's standard, fully-styled
+ * checkout UI) below as the alternative.
  *
  * PayNow is confirmed via stripe.confirmPayNowPayment with
  * `handleActions: false` rather than letting Stripe.js manage it — by
@@ -50,19 +43,24 @@ interface StripeIntentResult {
  * as an <img> in the page layout, then polled via
  * stripe.retrievePaymentIntent until the customer's bank confirms.
  *
- * PayNow is also NOT shown via <PaymentElement /> — that component decides
- * which payment methods to surface using its own IP-derived customer-country
- * check, separate from whatever's allowed on the PaymentIntent itself, and
- * that check has been unreliable for PayNow even from genuinely
- * Singapore-based connections. Calling stripe.confirmPayNowPayment directly
- * always renders the QR code regardless of that check.
+ * PayNow is deliberately NOT offered through <PaymentElement /> — that
+ * component decides which payment methods to surface using its own
+ * IP-derived customer-country check, separate from whatever's allowed on
+ * the PaymentIntent itself, and that check has been unreliable for PayNow
+ * even from genuinely Singapore-based connections. Calling
+ * stripe.confirmPayNowPayment directly always renders the QR code
+ * regardless of that check.
  *
- * Card still goes through split Card elements + stripe.confirmCardPayment,
- * which never had this problem — Card is never geo-filtered.
+ * Card, on the other hand, goes right back through <PaymentElement /> +
+ * stripe.confirmPayment (Stripe's own default styling, no custom fields) —
+ * Card was never affected by the geo-filtering issue above, so there's no
+ * reason to hand-roll it; Stripe's own polished, theme-aware UI is "the
+ * original Stripe checkout format" being asked for here.
  */
 export default function Checkout() {
   const { feeChargeId } = useParams<{ feeChargeId: string }>();
   const { user } = useAuth();
+  const { theme } = useTheme();
 
   const { data: config, isLoading: configLoading } = useQuery<{ stripePublishableKey: string | null }>({
     queryKey: ["/api/config"],
@@ -135,7 +133,15 @@ export default function Checkout() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Elements stripe={getStripe(config.stripePublishableKey)} options={{ clientSecret: intent.clientSecret }}>
+          <Elements
+            stripe={getStripe(config.stripePublishableKey)}
+            options={{
+              clientSecret: intent.clientSecret,
+              // Stripe's built-in dark/light theming for PaymentElement,
+              // rather than hand-styling individual card fields ourselves.
+              appearance: { theme: theme === "dark" ? "night" : "stripe" },
+            }}
+          >
             <CheckoutForm listingId={intent.listingId} clientSecret={intent.clientSecret} />
           </Elements>
         </CardContent>
@@ -143,15 +149,6 @@ export default function Checkout() {
     </div>
   );
 }
-
-// Split Card elements render inside their own cross-origin iframes, so they
-// can't read this page's CSS custom properties — colors have to be literal
-// values that roughly match --foreground / --muted-foreground for each
-// theme (see index.css), otherwise the text is unreadable (e.g. dark-on-dark).
-const CARD_ELEMENT_COLORS: Record<"light" | "dark", { text: string; placeholder: string; icon: string }> = {
-  light: { text: "#242a3d", placeholder: "#8890a3", icon: "#6b7280" },
-  dark: { text: "#e8eaf3", placeholder: "#a3a8b8", icon: "#a3a8b8" },
-};
 
 interface PayNowQrCode {
   imageUrl: string;
@@ -161,7 +158,6 @@ interface PayNowQrCode {
 function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSecret: string }) {
   const stripe = useStripe();
   const elements = useElements();
-  const { theme } = useTheme();
   const [cardSubmitting, setCardSubmitting] = useState(false);
   const [payNowLoading, setPayNowLoading] = useState(false);
   const [payNowQr, setPayNowQr] = useState<PayNowQrCode | null>(null);
@@ -187,12 +183,14 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
 
   async function handlePayCard() {
     if (!stripe || !elements) return;
-    const cardNumberElement = elements.getElement(CardNumberElement);
-    if (!cardNumberElement) return;
     setCardSubmitting(true);
     setError(null);
-    const { error: confirmError, paymentIntent } = await stripe.confirmCardPayment(clientSecret, {
-      payment_method: { card: cardNumberElement },
+    const { error: confirmError, paymentIntent } = await stripe.confirmPayment({
+      elements,
+      // Card confirms inline and never needs this, but it's required by the
+      // confirmPayment call signature regardless.
+      confirmParams: { return_url: window.location.href },
+      redirect: "if_required",
     });
     setCardSubmitting(false);
     if (confirmError) {
@@ -281,15 +279,6 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
     );
   }
 
-  const elementStyle = {
-    base: {
-      fontSize: "16px",
-      color: CARD_ELEMENT_COLORS[theme].text,
-      iconColor: CARD_ELEMENT_COLORS[theme].icon,
-      "::placeholder": { color: CARD_ELEMENT_COLORS[theme].placeholder },
-    },
-  };
-
   return (
     <div className="space-y-6">
       <div className="space-y-3">
@@ -335,28 +324,7 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
 
       <div className="space-y-3">
         <div className="text-sm font-medium">Pay with card</div>
-        <div className="space-y-2 rounded-lg border border-border p-3">
-          <div>
-            <label className="mb-1 block text-xs text-muted-foreground">Card number</label>
-            <div className="rounded-md border border-border px-3 py-2">
-              <CardNumberElement options={{ style: elementStyle }} />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="mb-1 block text-xs text-muted-foreground">Expiry</label>
-              <div className="rounded-md border border-border px-3 py-2">
-                <CardExpiryElement options={{ style: elementStyle }} />
-              </div>
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-muted-foreground">CVC</label>
-              <div className="rounded-md border border-border px-3 py-2">
-                <CardCvcElement options={{ style: elementStyle }} />
-              </div>
-            </div>
-          </div>
-        </div>
+        <PaymentElement />
         <Button
           className="w-full"
           onClick={handlePayCard}
