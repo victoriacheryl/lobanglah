@@ -25,11 +25,11 @@ import type {
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import Database from "better-sqlite3";
-import { eq, and, or, desc } from "drizzle-orm";
+import { eq, and, or, desc, lte, isNotNull, isNull } from "drizzle-orm";
 import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
-import { stripeEnabled, calculateFeeSgd, retrieveOrUpgradeClientSecret, ensureCustomer } from "./stripe";
+import { stripeEnabled, calculateFeeSgd, retrieveOrUpgradeClientSecrets, ensureCustomer } from "./stripe";
 import * as stripeStorage from "./stripe-storage";
 import { sendWhatsappOtp, normalizeSgPhone, generateOtpCode, whatsappEnabled } from "./whatsapp";
 import { sendVerificationEmail, emailEnabled } from "./email";
@@ -559,7 +559,7 @@ export interface IStorage {
   getBidsForListing(listingId: number): Promise<Bid[]>;
   getBidsByBidder(bidderId: number): Promise<Bid[]>;
   getBid(id: number): Promise<Bid | undefined>;
-  acceptBid(bidId: number, posterId: number): Promise<{ listing: Listing; feeCharge: FeeCharge; clientSecret?: string }>;
+  acceptBid(bidId: number, posterId: number): Promise<{ listing: Listing; feeCharge: FeeCharge; clientSecret?: string; paynowClientSecret?: string }>;
   rejectBid(bidId: number, posterId: number): Promise<Bid>;
   updateBid(id: number, bidderId: number, patch: BidUpdateInput): Promise<Bid>;
   cancelBid(id: number, bidderId: number): Promise<Bid>;
@@ -589,7 +589,7 @@ export interface IStorage {
   getFeeChargeStripeClientSecret(
     feeChargeId: number,
     posterId: number
-  ): Promise<{ clientSecret: string; feeAmount: number; listingId: number }>;
+  ): Promise<{ clientSecret: string; paynowClientSecret: string; feeAmount: number; listingId: number }>;
   getBidContact(bidId: number, requestingUserId: number): Promise<{ posterName: string; posterPhone: string; providerName: string; providerPhone: string } | undefined>;
 
   // notifications
@@ -598,8 +598,11 @@ export interface IStorage {
   markNotificationRead(id: number, userId: number): Promise<void>;
   markAllNotificationsRead(userId: number): Promise<void>;
   getUnreadNotificationCount(userId: number): Promise<number>;
-  createAnnouncement(title: string, body: string): Promise<void>;
+  createAnnouncement(title: string, body: string, scheduledFor?: number): Promise<Announcement>;
   getAnnouncements(): Promise<Announcement[]>;
+  getAllAnnouncementsForAdmin(): Promise<Announcement[]>;
+  updateAnnouncement(id: number, patch: { title?: string; body?: string; scheduledFor?: number | null }): Promise<Announcement>;
+  deleteAnnouncement(id: number): Promise<void>;
   getRestrictedUsers(): Promise<Pick<User, "id" | "name" | "status" | "restrictionReason" | "suspendedUntil">[]>;
 }
 
@@ -998,7 +1001,7 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(bids).where(eq(bids.id, id)).get();
   }
 
-  async acceptBid(bidId: number, posterId: number): Promise<{ listing: Listing; feeCharge: FeeCharge; clientSecret?: string }> {
+  async acceptBid(bidId: number, posterId: number): Promise<{ listing: Listing; feeCharge: FeeCharge; clientSecret?: string; paynowClientSecret?: string }> {
     const bid = await this.getBid(bidId);
     if (!bid) throw new Error("Bid not found");
     const listing = await this.getListing(bid.listingId);
@@ -1321,13 +1324,15 @@ export class DatabaseStorage implements IStorage {
   async getFeeChargeStripeClientSecret(
     feeChargeId: number,
     posterId: number
-  ): Promise<{ clientSecret: string; feeAmount: number; listingId: number }> {
+  ): Promise<{ clientSecret: string; paynowClientSecret: string; feeAmount: number; listingId: number }> {
     const feeCharge = db.select().from(feeCharges).where(eq(feeCharges.id, feeChargeId)).get();
     if (!feeCharge) throw new Error("Fee charge not found");
     if (feeCharge.posterId !== posterId) throw new Error("Only the poster can pay this platform fee");
     if (feeCharge.status === "paid") throw new Error("This fee has already been paid");
     if (feeCharge.status === "failed") throw new Error("This fee charge failed — accept the bid again to retry");
-    if (!feeCharge.stripePaymentIntentId) throw new Error("No Stripe payment is associated with this fee charge");
+    if (!feeCharge.stripePaymentIntentId && !feeCharge.stripePaynowIntentId) {
+      throw new Error("No Stripe payment is associated with this fee charge");
+    }
 
     const poster = db.select().from(users).where(eq(users.id, posterId)).get();
     if (!poster) throw new Error("Poster account not found");
@@ -1341,20 +1346,29 @@ export class DatabaseStorage implements IStorage {
       db.update(users).set({ stripeCustomerId: customerId }).where(eq(users.id, poster.id)).run();
     }
 
-    const result = await retrieveOrUpgradeClientSecret({
-      paymentIntentId: feeCharge.stripePaymentIntentId,
+    const result = await retrieveOrUpgradeClientSecrets({
+      existingCardId: feeCharge.stripePaymentIntentId,
+      existingPaynowId: feeCharge.stripePaynowIntentId,
       customerId,
       listingId: feeCharge.listingId,
       bidId: feeCharge.bidId,
       feeAmountSgd: feeCharge.feeAmount,
     });
-    if (result.recreated) {
+    if (result.cardRecreated || result.paynowRecreated) {
       db.update(feeCharges)
-        .set({ stripePaymentIntentId: result.paymentIntentId })
+        .set({
+          stripePaymentIntentId: result.cardPaymentIntentId,
+          stripePaynowIntentId: result.paynowPaymentIntentId,
+        })
         .where(eq(feeCharges.id, feeChargeId))
         .run();
     }
-    return { clientSecret: result.clientSecret, feeAmount: feeCharge.feeAmount, listingId: feeCharge.listingId };
+    return {
+      clientSecret: result.cardClientSecret,
+      paynowClientSecret: result.paynowClientSecret,
+      feeAmount: feeCharge.feeAmount,
+      listingId: feeCharge.listingId,
+    };
   }
 
   /** Returns both parties' names/phone numbers for an accepted bid, but only once
@@ -1589,18 +1603,105 @@ export class DatabaseStorage implements IStorage {
   }
 
   /** Admin broadcast: persists a durable record (for the public announcement
-   *  board) and also posts the same notification to every registered user's
-   *  inbox, so it isn't missed even if they never visit the main page. */
-  async createAnnouncement(title: string, body: string): Promise<void> {
-    db.insert(announcements).values({ title, body, createdAt: Date.now() }).run();
-    const allUsers = await this.getAllUsers();
-    for (const u of allUsers) {
-      await this.createNotification(u.id, "announcement", title, body);
+   *  board) and, if it's not scheduled for later, immediately posts the same
+   *  notification to every registered user's inbox so it isn't missed even
+   *  if they never visit the main page. A future `scheduledFor` instead
+   *  leaves it unpublished — hidden from the public board and un-notified —
+   *  until publishScheduledAnnouncements' sweep releases it. */
+  async createAnnouncement(title: string, body: string, scheduledFor?: number): Promise<Announcement> {
+    const now = Date.now();
+    const isFuture = typeof scheduledFor === "number" && scheduledFor > now;
+    const row = db
+      .insert(announcements)
+      .values({
+        title,
+        body,
+        createdAt: now,
+        scheduledFor: isFuture ? scheduledFor : null,
+        publishedAt: isFuture ? null : now,
+      })
+      .returning()
+      .get();
+
+    if (!isFuture) {
+      const allUsers = await this.getAllUsers();
+      for (const u of allUsers) {
+        await this.createNotification(u.id, "announcement", title, body);
+      }
     }
+    return row;
   }
 
+  /** Public board feed — only announcements that have actually gone out,
+   *  newest-published first. Excludes anything still waiting on its
+   *  scheduledFor time. */
   async getAnnouncements(): Promise<Announcement[]> {
+    return db
+      .select()
+      .from(announcements)
+      .where(isNotNull(announcements.publishedAt))
+      .orderBy(desc(announcements.publishedAt))
+      .all();
+  }
+
+  /** Admin management list — every announcement regardless of publish state,
+   *  newest-created first, so pending/scheduled ones are visible too. */
+  async getAllAnnouncementsForAdmin(): Promise<Announcement[]> {
     return db.select().from(announcements).orderBy(desc(announcements.createdAt)).all();
+  }
+
+  /** Edits an announcement's text and/or (while still pending) its schedule.
+   *  Once an announcement has actually been published, its schedule is
+   *  locked — only the title/body can still be corrected, and doing so does
+   *  not re-notify anyone. Clearing/backdating scheduledFor on a still-pending
+   *  announcement publishes it immediately rather than waiting for the next
+   *  sweep. */
+  async updateAnnouncement(
+    id: number,
+    patch: { title?: string; body?: string; scheduledFor?: number | null }
+  ): Promise<Announcement> {
+    const existing = db.select().from(announcements).where(eq(announcements.id, id)).get();
+    if (!existing) throw new Error("Announcement not found");
+
+    if (patch.scheduledFor !== undefined && existing.publishedAt) {
+      throw new Error("This announcement has already been published — its schedule can't be changed");
+    }
+
+    const nextTitle = patch.title ?? existing.title;
+    const nextBody = patch.body ?? existing.body;
+
+    if (existing.publishedAt) {
+      // Already out — only the text can still be corrected.
+      db.update(announcements).set({ title: nextTitle, body: nextBody }).where(eq(announcements.id, id)).run();
+      return db.select().from(announcements).where(eq(announcements.id, id)).get()!;
+    }
+
+    const nextScheduledFor = patch.scheduledFor === undefined ? existing.scheduledFor : patch.scheduledFor;
+    const now = Date.now();
+    const isFuture = typeof nextScheduledFor === "number" && nextScheduledFor > now;
+    db.update(announcements)
+      .set({ title: nextTitle, body: nextBody, scheduledFor: isFuture ? nextScheduledFor : null })
+      .where(eq(announcements.id, id))
+      .run();
+
+    if (!isFuture) {
+      // No schedule, or one that's already due — publish right now instead
+      // of waiting for the next sweep.
+      db.update(announcements).set({ publishedAt: now }).where(eq(announcements.id, id)).run();
+      const allUsers = await this.getAllUsers();
+      for (const u of allUsers) {
+        await this.createNotification(u.id, "announcement", nextTitle, nextBody);
+      }
+    }
+
+    return db.select().from(announcements).where(eq(announcements.id, id)).get()!;
+  }
+
+  /** Removes an announcement from the durable board/admin list. Any
+   *  per-user notification rows already sent for it are left alone — those
+   *  are independent inbox entries, not a live view of this row. */
+  async deleteAnnouncement(id: number): Promise<void> {
+    db.delete(announcements).where(eq(announcements.id, id)).run();
   }
 
   /** Public (non-admin) view of moderation status, for the main-page
@@ -1631,3 +1732,82 @@ export class DatabaseStorage implements IStorage {
 }
 
 export const storage = new DatabaseStorage();
+
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Auto-closes any "live" listing that's been open 7+ days without reaching
+ *  its target headcount of accepted bids — this is what backs the copy on
+ *  the "Post a Lobang" form ("the posting stays open for 7 days, or until
+ *  you've accepted that many bids, whichever earlier"). Rejects any bids
+ *  still pending on it, same as when a listing closes normally by reaching
+ *  quota (see rejectOtherPendingBids above), and lets the poster know why
+ *  it closed. Safe to call repeatedly — only touches listings that are
+ *  still "live" and past the 7-day cutoff. */
+export async function closeExpiredListings(): Promise<void> {
+  const cutoff = Date.now() - SEVEN_DAYS_MS;
+  const stale = db
+    .select()
+    .from(listings)
+    .where(and(eq(listings.status, "live"), lte(listings.createdAt, cutoff)))
+    .all();
+
+  for (const listing of stale) {
+    db.update(listings).set({ status: "closed" }).where(eq(listings.id, listing.id)).run();
+    rejectOtherPendingBids(listing.id);
+    await storage.createNotification(
+      listing.userId,
+      "listing_expired",
+      "Your posting closed after 7 days",
+      `"${listing.title}" reached its 7-day open window without enough bids accepted, so it's now closed. Post again if you still need this.`,
+      listing.id
+    );
+  }
+}
+
+/** Runs closeExpiredListings() once immediately on boot (in case the server
+ *  was down when a listing crossed the 7-day mark) and then on a recurring
+ *  hourly timer for the rest of the process's life. Errors are caught and
+ *  logged rather than thrown — a missed sweep just means the next one an
+ *  hour later catches it instead, rather than crashing the whole server. */
+export function startListingExpiryScheduler(): void {
+  const sweep = () => {
+    closeExpiredListings().catch((err) => console.error("closeExpiredListings failed:", err));
+  };
+  sweep();
+  setInterval(sweep, 60 * 60 * 1000);
+}
+
+/** Releases any announcement whose scheduledFor time has arrived but that
+ *  hasn't been published yet: marks it published and fans the notification
+ *  out to every user, exactly like an immediate announcement would've gotten
+ *  on creation. Safe to call repeatedly — only touches still-pending rows
+ *  past their release time. */
+export async function publishScheduledAnnouncements(): Promise<void> {
+  const now = Date.now();
+  const due = db
+    .select()
+    .from(announcements)
+    .where(and(isNull(announcements.publishedAt), lte(announcements.scheduledFor, now)))
+    .all();
+
+  for (const a of due) {
+    db.update(announcements).set({ publishedAt: now }).where(eq(announcements.id, a.id)).run();
+    const allUsers = await storage.getAllUsers();
+    for (const u of allUsers) {
+      await storage.createNotification(u.id, "announcement", a.title, a.body);
+    }
+  }
+}
+
+/** Runs publishScheduledAnnouncements() once immediately on boot (in case the
+ *  server was down when a scheduled announcement's release time passed) and
+ *  then every minute for the rest of the process's life — announcements are
+ *  scheduled to specific times, so this needs finer granularity than the
+ *  hourly listing-expiry sweep above. */
+export function startAnnouncementScheduler(): void {
+  const sweep = () => {
+    publishScheduledAnnouncements().catch((err) => console.error("publishScheduledAnnouncements failed:", err));
+  };
+  sweep();
+  setInterval(sweep, 60 * 1000);
+}

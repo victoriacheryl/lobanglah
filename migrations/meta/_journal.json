@@ -43,6 +43,20 @@
       "when": 1784900000000,
       "tag": "0005_add_bid_reopen_requested",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1785000000000,
+      "tag": "0006_add_stripe_paynow_intent_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1785100000000,
+      "tag": "0007_add_announcement_scheduling",
+      "breakpoints": true
     }
   ]
 }

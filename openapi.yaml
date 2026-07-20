@@ -661,7 +661,17 @@ paths:
                   clientSecret:
                     type: string
                     nullable: true
-                    description: Present only when Stripe is enabled.
+                    description: >
+                      Card-only PaymentIntent's client secret. Present only when
+                      Stripe is enabled.
+                  paynowClientSecret:
+                    type: string
+                    nullable: true
+                    description: >
+                      Separate paynow-only PaymentIntent's client secret (a
+                      distinct PaymentIntent from `clientSecret`, so PayNow
+                      doesn't also appear as a selectable method inside the
+                      card PaymentElement). Present only when Stripe is enabled.
         "400":
           description: Not the owner, listing not live, bid not pending, or quota reached
           content:
@@ -1035,6 +1045,47 @@ paths:
               schema: { $ref: "#/components/schemas/FeeCharge" }
         "400":
           description: Not the poster, already failed, or invalid method
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/fees/{id}/stripe-intent:
+    get:
+      tags: [Fees]
+      summary: (Re)fetch this fee charge's Stripe client secrets
+      description: >
+        Real-payments path only. Returns the client secrets for the fee
+        charge's two PaymentIntents — a card-only one (for the
+        checkout page's Payment Element) and a separate paynow-only one (for
+        its own inline PayNow QR flow). Reopening this after a previous
+        attempt didn't complete (closed tab, dropped connection) never
+        creates a new charge; it re-fetches, or if needed re-creates, the
+        same fee charge's existing PaymentIntents.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Fee charge id
+          schema: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  clientSecret: { type: string, description: Card-only PaymentIntent's client secret. }
+                  paynowClientSecret: { type: string, description: Paynow-only PaymentIntent's client secret. }
+                  feeAmount: { type: number }
+                  listingId: { type: integer }
+        "400":
+          description: Stripe not configured, not the poster, already paid/failed
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1905,11 +1956,13 @@ paths:
   /api/admin/announcements:
     post:
       tags: [Admin]
-      summary: Broadcast an announcement — persists it and notifies every user
+      summary: Create an announcement — sent immediately, or scheduled for later
       description: >-
-        Persists a durable Announcement row (shown on the public announcement board via
-        GET /api/announcements) and also posts the same content as a notification to every
-        registered user's inbox.
+        Persists a durable Announcement row. If scheduledFor is omitted (or already in the past),
+        it publishes immediately — visible on the public board via GET /api/announcements, and
+        posted as a notification to every registered user's inbox right away. A future
+        scheduledFor instead holds it back (unpublished, un-notified, visible only on this admin
+        list) until a background sweep releases it at that time.
       requestBody:
         required: true
         content:
@@ -1920,12 +1973,13 @@ paths:
               properties:
                 title: { type: string, minLength: 1, maxLength: 120 }
                 body: { type: string, minLength: 1, maxLength: 500 }
+                scheduledFor: { type: integer, description: Epoch ms. Omit to publish immediately. }
       responses:
         "201":
-          description: Announcement sent
+          description: Announcement created
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/OkResult" }
+              schema: { $ref: "#/components/schemas/Announcement" }
         "400":
           description: Invalid announcement
           content:
@@ -1942,11 +1996,110 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+    get:
+      tags: [Admin]
+      summary: List every announcement, published or still pending, newest-created first
+      description: Feeds the Admin page's announcement management list.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Announcement" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/admin/announcements/{id}:
+    patch:
+      tags: [Admin]
+      summary: Edit an announcement's title/body, or (while still pending) its schedule
+      description: >-
+        Once an announcement has been published, its scheduledFor is locked — only title/body can
+        still be corrected, and doing so does not re-notify anyone. While still pending, setting
+        scheduledFor to null (or a past timestamp) publishes it immediately instead of waiting for
+        the scheduled time.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string, minLength: 1, maxLength: 120 }
+                body: { type: string, minLength: 1, maxLength: 500 }
+                scheduledFor: { type: integer, nullable: true }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Announcement" }
+        "400":
+          description: Not found, or schedule change attempted on an already-published announcement
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+    delete:
+      tags: [Admin]
+      summary: Delete an announcement
+      description: >-
+        Removes it from the public board and this admin list. Per-user notification rows already
+        sent for it are left untouched.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/announcements:
     get:
       tags: [Public]
-      summary: List every admin announcement, newest first
-      description: Public — feeds the announcement board on the main page. No sign-in required.
+      summary: List every published admin announcement, newest-published first
+      description: >-
+        Public — feeds the announcement board on the main page. No sign-in required. Excludes
+        anything still awaiting its scheduledFor release time.
       security: []
       responses:
         "200":
@@ -2257,12 +2410,25 @@ components:
 
     Announcement:
       type: object
-      description: A durable, public admin broadcast — shown on the main page's announcement board.
+      description: >-
+        A durable admin broadcast. Shown on the main page's public announcement board once
+        published; before that (while scheduledFor is in the future) it's only visible on the
+        Admin page's management list.
       properties:
         id: { type: integer }
         title: { type: string }
         body: { type: string }
         createdAt: { type: integer }
+        scheduledFor:
+          type: integer
+          nullable: true
+          description: Epoch ms. Null if it was (or will be) published immediately rather than scheduled.
+        publishedAt:
+          type: integer
+          nullable: true
+          description: >-
+            Epoch ms this announcement actually went out and notified every user. Null while still
+            pending its scheduledFor time.
 
     Notification:
       type: object
@@ -2285,6 +2451,7 @@ components:
               fee_paid,
               listing_approved,
               listing_rejected,
+              listing_expired,
               announcement,
             ]
         title: { type: string }

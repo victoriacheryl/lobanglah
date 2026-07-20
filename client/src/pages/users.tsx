@@ -1,5 +1,6 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
+import { Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { Card, CardContent } from "@/components/ui/card";
@@ -543,74 +544,83 @@ function UserRow({
         </div>
 
         <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+          {isSelf && <span className="text-xs text-muted-foreground">You</span>}
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            onClick={onEdit}
+            data-testid={`button-edit-user-${u.id}`}
+          >
+            <Pencil className="h-3.5 w-3.5" /> Edit
+          </Button>
           {isSelf ? (
-            <span className="text-xs text-muted-foreground">You</span>
+            // The admin moderation reset (below) issues a brand-new password
+            // without knowing the old one — fine for helping a locked-out
+            // user, but not the right tool to use on your own account mid
+            // session. Change Password on the Profile page is the same
+            // outcome, just requiring your current password like normal.
+            <Button asChild size="sm" variant="outline" className="gap-1.5" data-testid={`button-change-password-${u.id}`}>
+              <Link href="/profile">
+                <KeyRound className="h-3.5 w-3.5" /> Change password
+              </Link>
+            </Button>
           ) : (
-            <>
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-1.5"
-                onClick={onEdit}
-                data-testid={`button-edit-user-${u.id}`}
-              >
-                <Pencil className="h-3.5 w-3.5" /> Edit
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-1.5"
-                onClick={onResetPassword}
-                title="Passwords are hashed and can't be viewed — this generates a new one"
-                data-testid={`button-reset-password-${u.id}`}
-              >
-                <KeyRound className="h-3.5 w-3.5" /> Reset password
-              </Button>
-              {u.isAdmin ? (
-                <span className="text-xs text-muted-foreground">Admin account</span>
-              ) : restricted ? (
-                <>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="gap-1.5"
-                    onClick={onReactivate}
-                    disabled={reactivating}
-                    data-testid={`button-reactivate-${u.id}`}
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" /> Reactivate
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="gap-1.5 text-destructive hover:text-destructive"
-                    onClick={onDelete}
-                    data-testid={`button-delete-user-${u.id}`}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button size="sm" variant="outline" className="gap-1.5" onClick={onSuspend} data-testid={`button-suspend-${u.id}`}>
-                    <Clock className="h-3.5 w-3.5" /> Suspend
-                  </Button>
-                  <Button size="sm" variant="outline" className="gap-1.5" onClick={onBan} data-testid={`button-ban-${u.id}`}>
-                    <Ban className="h-3.5 w-3.5" /> Ban
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="gap-1.5 text-destructive hover:text-destructive"
-                    onClick={onDelete}
-                    data-testid={`button-delete-user-${u.id}`}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </>
-              )}
-            </>
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              onClick={onResetPassword}
+              title="Passwords are hashed and can't be viewed — this generates a new one"
+              data-testid={`button-reset-password-${u.id}`}
+            >
+              <KeyRound className="h-3.5 w-3.5" /> Reset password
+            </Button>
           )}
+          {!isSelf &&
+            (u.isAdmin ? (
+              <span className="text-xs text-muted-foreground">Admin account</span>
+            ) : restricted ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5"
+                  onClick={onReactivate}
+                  disabled={reactivating}
+                  data-testid={`button-reactivate-${u.id}`}
+                >
+                  <RotateCcw className="h-3.5 w-3.5" /> Reactivate
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 text-destructive hover:text-destructive"
+                  onClick={onDelete}
+                  data-testid={`button-delete-user-${u.id}`}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button size="sm" variant="outline" className="gap-1.5" onClick={onSuspend} data-testid={`button-suspend-${u.id}`}>
+                  <Clock className="h-3.5 w-3.5" /> Suspend
+                </Button>
+                <Button size="sm" variant="outline" className="gap-1.5" onClick={onBan} data-testid={`button-ban-${u.id}`}>
+                  <Ban className="h-3.5 w-3.5" /> Ban
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 text-destructive hover:text-destructive"
+                  onClick={onDelete}
+                  data-testid={`button-delete-user-${u.id}`}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </>
+            ))}
         </div>
       </CardContent>
     </Card>

@@ -16,6 +16,8 @@ import {
   startPasswordReset,
   resendPasswordResetOtp,
   completePasswordReset,
+  startListingExpiryScheduler,
+  startAnnouncementScheduler,
 } from "./storage";
 import {
   registerStartSchema,
@@ -27,6 +29,7 @@ import {
   adminUpdateBidSchema,
   payFeeChargeSchema,
   createAnnouncementSchema,
+  updateAnnouncementSchema,
   changePasswordSchema,
   forgotPasswordStartSchema,
   forgotPasswordResetSchema,
@@ -949,19 +952,51 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // Admin broadcast announcement — posts the same notification to every user.
+  // Admin broadcast announcement — posts the same notification to every user
+  // immediately, unless scheduledFor is a future timestamp, in which case
+  // it's held back (unpublished, un-notified) until that time.
   app.post("/api/admin/announcements", requireAuth, requireAdmin, async (req, res) => {
     try {
       const data = createAnnouncementSchema.parse(req.body);
-      await storage.createAnnouncement(data.title, data.body);
-      res.status(201).json({ ok: true });
+      const row = await storage.createAnnouncement(data.title, data.body, data.scheduledFor);
+      res.status(201).json(row);
     } catch (err: any) {
       res.status(400).json({ message: friendlyError(err, "Invalid announcement") });
     }
   });
 
-  // Public: every admin announcement, newest first — feeds the announcement
-  // board on the main page. No auth required, same as browsing listings.
+  // Admin: every announcement regardless of publish state (published,
+  // still-pending/scheduled) — feeds the management list on the Admin page.
+  app.get("/api/admin/announcements", requireAuth, requireAdmin, async (_req, res) => {
+    const rows = await storage.getAllAnnouncementsForAdmin();
+    res.json(rows);
+  });
+
+  // Admin: edit an announcement's title/body, or (while still pending) its
+  // scheduled release time.
+  app.patch("/api/admin/announcements/:id", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const data = updateAnnouncementSchema.parse(req.body);
+      const row = await storage.updateAnnouncement(Number(req.params.id), data);
+      res.json(row);
+    } catch (err: any) {
+      res.status(400).json({ message: friendlyError(err, "Could not update announcement") });
+    }
+  });
+
+  // Admin: remove an announcement from the board/management list.
+  app.delete("/api/admin/announcements/:id", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      await storage.deleteAnnouncement(Number(req.params.id));
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ message: friendlyError(err, "Could not delete announcement") });
+    }
+  });
+
+  // Public: every published admin announcement, newest first — feeds the
+  // announcement board on the main page. No auth required, same as browsing
+  // listings. Anything still awaiting its scheduled release time is excluded.
   app.get("/api/announcements", async (_req, res) => {
     const rows = await storage.getAnnouncements();
     res.json(rows);
@@ -1008,6 +1043,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(502).json({ message: err.message || "Could not send your enquiry. Please try again." });
     }
   });
+
+  // Auto-close listings that have been live for 7+ days without reaching
+  // their target headcount — see storage.closeExpiredListings for details.
+  startListingExpiryScheduler();
+
+  // Releases scheduled announcements once their release time arrives — see
+  // storage.publishScheduledAnnouncements for details.
+  startAnnouncementScheduler();
 
   return httpServer;
 }

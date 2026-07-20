@@ -13,7 +13,14 @@ import { ShieldCheck, Loader2, CheckCircle2, XCircle } from "lucide-react";
 import { formatSGD } from "@/lib/format";
 
 interface StripeIntentResult {
+  // Card-only PaymentIntent's client secret — drives <Elements>/<PaymentElement>.
   clientSecret: string;
+  // Separate paynow-only PaymentIntent's client secret — passed directly to
+  // stripe.confirmPayNowPayment, never rendered through <PaymentElement>. Two
+  // distinct PaymentIntents (rather than one intent allowing both methods)
+  // is what keeps PayNow from also showing up as a selectable tab inside the
+  // card form below.
+  paynowClientSecret: string;
   feeAmount: number;
   listingId: number;
 }
@@ -43,19 +50,22 @@ interface StripeIntentResult {
  * as an <img> in the page layout, then polled via
  * stripe.retrievePaymentIntent until the customer's bank confirms.
  *
- * PayNow is deliberately NOT offered through <PaymentElement /> — that
- * component decides which payment methods to surface using its own
- * IP-derived customer-country check, separate from whatever's allowed on
- * the PaymentIntent itself, and that check has been unreliable for PayNow
- * even from genuinely Singapore-based connections. Calling
- * stripe.confirmPayNowPayment directly always renders the QR code
- * regardless of that check.
+ * PayNow and Card are backed by two entirely separate PaymentIntents (see
+ * server/stripe.ts's createFeeChargePaymentIntents), not one intent that
+ * allows both methods. Stripe's <PaymentElement/> has no client-side option
+ * to hide a payment method type that's allowed on its underlying
+ * PaymentIntent — so a single shared intent listing both "card" and
+ * "paynow" made PayNow render twice: once in this page's own QR panel, and
+ * again as a selectable tab inside the Payment Element below. Scoping the
+ * Payment Element to a card-only PaymentIntent, and driving the QR panel
+ * from a separate paynow-only PaymentIntent via stripe.confirmPayNowPayment,
+ * keeps each method appearing exactly once. Whichever one the poster
+ * actually completes "wins" — the backend cancels the other PaymentIntent
+ * once either succeeds, so the same fee can't be paid twice.
  *
- * Card, on the other hand, goes right back through <PaymentElement /> +
- * stripe.confirmPayment (Stripe's own default styling, no custom fields) —
- * Card was never affected by the geo-filtering issue above, so there's no
- * reason to hand-roll it; Stripe's own polished, theme-aware UI is "the
- * original Stripe checkout format" being asked for here.
+ * Card goes through <PaymentElement /> + stripe.confirmPayment (Stripe's own
+ * default styling, no custom fields) — Stripe's own polished, theme-aware UI
+ * is "the original Stripe checkout format" being asked for here.
  */
 export default function Checkout() {
   const { feeChargeId } = useParams<{ feeChargeId: string }>();
@@ -142,7 +152,7 @@ export default function Checkout() {
               appearance: { theme: theme === "dark" ? "night" : "stripe" },
             }}
           >
-            <CheckoutForm listingId={intent.listingId} clientSecret={intent.clientSecret} />
+            <CheckoutForm listingId={intent.listingId} paynowClientSecret={intent.paynowClientSecret} />
           </Elements>
         </CardContent>
       </Card>
@@ -159,49 +169,49 @@ interface PayNowQrCode {
  * The real PayNow wordmark (bold "PAYNOW" with the O replaced by a
  * check-in-a-circle), same as what Stripe itself shows next to its PayNow
  * QR code — see the "PayNow" tab/badge in Stripe's own Payment Element and
- * on stripe.com/payment-method/paynow. Redrawn as inline SVG (brand mark,
- * not a hot-linked asset) so it always renders regardless of Stripe.js's
- * CDN, and so it can sit as the header of our own QR panel below.
+ * on stripe.com/payment-method/paynow.
+ *
+ * Built from ordinary HTML text plus one small inline-SVG checkmark icon,
+ * rather than a single SVG with hand-placed <text> elements — SVG <text>
+ * doesn't reflow to its actual rendered glyph widths, so if a viewer's
+ * browser substituted a different font than the one assumed when the x
+ * coordinates were chosen, the "W" and the circle overlapped/misaligned
+ * ("looks distorted"). Plain text laid out by the browser's own font
+ * engine, with the circle as a fixed-size icon next to it, can't drift out
+ * of alignment the same way.
  */
 function PayNowLogo({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 172 32" className={className} role="img" aria-label="PayNow">
-      <text
-        x="0"
-        y="24"
-        fontFamily="Arial, Helvetica, sans-serif"
-        fontWeight="800"
-        fontSize="26"
-        fill="#9B1B7E"
-        letterSpacing="0.5"
-      >
-        PAYN
-      </text>
-      <circle cx="122" cy="16" r="14" fill="none" stroke="#9B1B7E" strokeWidth="3" />
-      <path
-        d="M115 16.5l4.5 4.5 9-9.5"
-        fill="none"
-        stroke="#9B1B7E"
-        strokeWidth="3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <text
-        x="139"
-        y="24"
-        fontFamily="Arial, Helvetica, sans-serif"
-        fontWeight="800"
-        fontSize="26"
-        fill="#9B1B7E"
-        letterSpacing="0.5"
-      >
-        W
-      </text>
-    </svg>
+    <span
+      className={`inline-flex items-center font-extrabold tracking-tight ${className ?? ""}`}
+      style={{ color: "#9B1B7E" }}
+      role="img"
+      aria-label="PayNow"
+    >
+      <span className="leading-none">PAYN</span>
+      <svg viewBox="0 0 28 28" className="mx-[1px] h-[0.85em] w-[0.85em] shrink-0" aria-hidden="true">
+        <circle cx="14" cy="14" r="12" fill="none" stroke="#9B1B7E" strokeWidth="3" />
+        <path
+          d="M8 14.5l4 4 8-9"
+          fill="none"
+          stroke="#9B1B7E"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+      <span className="leading-none">W</span>
+    </span>
   );
 }
 
-function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSecret: string }) {
+function CheckoutForm({
+  listingId,
+  paynowClientSecret,
+}: {
+  listingId: number;
+  paynowClientSecret: string;
+}) {
   const stripe = useStripe();
   const elements = useElements();
   const [cardSubmitting, setCardSubmitting] = useState(false);
@@ -261,7 +271,7 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
     // method from nothing — it needs an explicit (even empty) payment_method
     // object, or Stripe rejects it with "none was provided".
     const { error: confirmError, paymentIntent } = await stripe.confirmPayNowPayment(
-      clientSecret,
+      paynowClientSecret,
       { payment_method: {} },
       { handleActions: false }
     );
@@ -301,14 +311,14 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
   useEffect(() => {
     if (!payNowQr || !stripe || succeeded) return;
     const interval = setInterval(async () => {
-      const { paymentIntent } = await stripe.retrievePaymentIntent(clientSecret);
+      const { paymentIntent } = await stripe.retrievePaymentIntent(paynowClientSecret);
       if (paymentIntent?.status === "succeeded") {
         finalize(paymentIntent.id);
       }
     }, 3000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [payNowQr, stripe, succeeded, clientSecret]);
+  }, [payNowQr, stripe, succeeded, paynowClientSecret]);
 
   if (succeeded) {
     return (
@@ -330,7 +340,7 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
       <div className="space-y-3">
         <div className="overflow-hidden rounded-lg border border-border">
           <div className="flex items-center justify-center border-b border-border bg-white px-4 py-3">
-            <PayNowLogo className="h-6" />
+            <PayNowLogo className="text-2xl" />
           </div>
 
           <div className="flex flex-col items-center gap-2 bg-white p-4">

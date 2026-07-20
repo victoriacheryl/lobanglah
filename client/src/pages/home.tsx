@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
-import { useLocation } from "wouter";
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useSearch } from "wouter";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -57,10 +57,24 @@ export default function Home() {
   });
   const hasBoardContent = (announcements && announcements.length > 0) || (restrictedUsers && restrictedUsers.length > 0);
 
+  // Clicking an "announcement" notification links here with
+  // ?scrollTo=announcements so the reader lands right on the board instead
+  // of having to scroll and find it themselves.
+  const search = useSearch();
+  const scrollToAnnouncements = new URLSearchParams(search).get("scrollTo") === "announcements";
+  const boardRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (scrollToAnnouncements && hasBoardContent) {
+      boardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [scrollToAnnouncements, hasBoardContent]);
+
   return (
     <div className="mx-auto max-w-6xl px-4 sm:px-6 py-8 space-y-8">
       {hasBoardContent && (
         <section
+          ref={boardRef}
           className="relative overflow-hidden rounded-xl border border-border bg-card shadow-sm"
           data-testid="section-announcement-board"
         >
@@ -164,7 +178,7 @@ export default function Home() {
           </h1>
           <p className="mt-2 text-sm text-muted-foreground max-w-2xl">
             LobangLah! connects Singapore residents to seek or offer services and goods, with admin-reviewed
-            listings and a small platform fee charged only when a bid is accepted.
+            listings and a small platform fee charged to the poster only when a bid is accepted.
           </p>
         </div>
         <Button
@@ -180,7 +194,7 @@ export default function Home() {
             <ShieldCheck className="h-4 w-4 text-accent shrink-0" /> Every listing is admin-reviewed
           </div>
           <div className="flex items-center gap-2 text-muted-foreground">
-            <HandCoins className="h-4 w-4 text-accent shrink-0" /> Only pay a small fee on bid acceptance
+            <HandCoins className="h-4 w-4 text-accent shrink-0" /> Posters only pay a small fee on bid acceptance
           </div>
           <div className="flex items-center gap-2 text-muted-foreground">
             <Users className="h-4 w-4 text-accent shrink-0" /> Contact details stay private until you're ready

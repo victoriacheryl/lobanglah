@@ -4,7 +4,7 @@ import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
-import { Bell, FileCheck2, Gavel, CheckCircle2, HandCoins, XCircle, Megaphone, MessageCircle, RotateCcw, Ban } from "lucide-react";
+import { Bell, FileCheck2, Gavel, CheckCircle2, HandCoins, XCircle, Megaphone, MessageCircle, RotateCcw, Ban, Clock } from "lucide-react";
 import { useState } from "react";
 import type { Notification } from "@shared/schema";
 import { formatDateTime } from "@/lib/format";
@@ -23,20 +23,10 @@ const ICONS: Record<string, React.ElementType> = {
   fee_paid: HandCoins,
   listing_approved: CheckCircle2,
   listing_rejected: XCircle,
+  listing_expired: Clock,
   announcement: Megaphone,
 };
 
-// Every bid-related notification lands the reader on the listing's Bids tab
-// — this is where accept/reject/edit/cancel/reopen all live.
-const BIDS_TAB_TYPES = new Set([
-  "new_bid",
-  "bid_accepted",
-  "bid_rejected",
-  "bid_removed",
-  "bid_cancelled",
-  "bid_reopened",
-  "bid_reopen_requested",
-]);
 
 export function NotificationBell() {
   const { user } = useAuth();
@@ -124,24 +114,25 @@ export function NotificationBell() {
                     if (!n.read) readOneMutation.mutate(n.id);
                     if (n.type === "new_posting_review") {
                       navigate("/admin");
+                    } else if (n.type === "announcement") {
+                      // The board lives on the home page, not its own route —
+                      // scroll straight to it instead of leaving the reader to
+                      // hunt for it themselves.
+                      navigate("/?scrollTo=announcements");
                     } else if (n.type === "new_message" && n.relatedListingId) {
-                      // Jump straight to the Messages tab (and the right
-                      // conversation, if we know who it's with) instead of
-                      // dropping the user on Bids and making them go find it.
-                      const params = new URLSearchParams({ tab: "messages" });
+                      // Bids and messages now live together on one page, grouped
+                      // by bidder — jump to the right conversation if we know
+                      // who it's with.
+                      const params = new URLSearchParams();
                       if (n.relatedUserId) params.set("participant", String(n.relatedUserId));
-                      navigate(`/listings/${n.relatedListingId}?${params.toString()}`);
-                    } else if (BIDS_TAB_TYPES.has(n.type) && n.relatedListingId) {
-                      // Land directly on the Bids tab — explicit query param
-                      // rather than relying on it being the default tab —
-                      // where accept/reject/edit/cancel/reopen all live.
-                      navigate(`/listings/${n.relatedListingId}?tab=bids`);
+                      const qs = params.toString();
+                      navigate(`/listings/${n.relatedListingId}${qs ? `?${qs}` : ""}`);
                     } else if (n.relatedListingId) {
                       navigate(`/listings/${n.relatedListingId}`);
                     }
                     // Always close the popover on click, even for notifications
-                    // with no destination (e.g. announcements) — otherwise a click
-                    // on those appears to do nothing.
+                    // with no destination — otherwise a click on those appears
+                    // to do nothing.
                     setOpen(false);
                   }}
                   className={`w-full text-left px-3 py-2.5 border-b border-border last:border-b-0 flex items-start gap-2.5 hover-elevate ${

@@ -6,13 +6,13 @@ import { db, countCommittedBids, rejectOtherPendingBids } from "./storage";
 import { users, listings, bids, feeCharges } from "@shared/schema";
 import type { Bid, Listing, FeeCharge } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
-import { ensureCustomer, createFeeChargePaymentIntent, getPaymentIntentStatus } from "./stripe";
+import { ensureCustomer, createFeeChargePaymentIntents, getPaymentIntentStatus, cancelFeeCharge } from "./stripe";
 
 export async function acceptBidWithStripe(
   bid: Bid,
   listing: Listing,
   posterId: number
-): Promise<{ listing: Listing; feeCharge: FeeCharge; clientSecret?: string }> {
+): Promise<{ listing: Listing; feeCharge: FeeCharge; clientSecret?: string; paynowClientSecret?: string }> {
   // Guard against a double-click / duplicate accept creating two in-flight
   // PaymentIntents for the same bid.
   const existingPending = db
@@ -37,12 +37,13 @@ export async function acceptBidWithStripe(
     db.update(users).set({ stripeCustomerId: customerId }).where(eq(users.id, poster.id)).run();
   }
 
-  const { paymentIntentId, clientSecret, feeAmount } = await createFeeChargePaymentIntent({
-    bidAmountSgd: bid.amount,
-    customerId,
-    listingId: listing.id,
-    bidId: bid.id,
-  });
+  const { cardPaymentIntentId, cardClientSecret, paynowPaymentIntentId, paynowClientSecret, feeAmount } =
+    await createFeeChargePaymentIntents({
+      bidAmountSgd: bid.amount,
+      customerId,
+      listingId: listing.id,
+      bidId: bid.id,
+    });
 
   // The listing stays "live" while this charge is in flight — it only
   // closes once enough bids have actually been accepted (paid) to reach the
@@ -58,21 +59,38 @@ export async function acceptBidWithStripe(
       feeAmount,
       status: "pending",
       createdAt: Date.now(),
-      stripePaymentIntentId: paymentIntentId,
+      stripePaymentIntentId: cardPaymentIntentId,
+      stripePaynowIntentId: paynowPaymentIntentId,
     })
     .returning()
     .get();
 
-  return { listing, feeCharge, clientSecret };
+  return { listing, feeCharge, clientSecret: cardClientSecret, paynowClientSecret };
 }
 
 /** Called from the Stripe webhook (or sync fallback) once the fee charge succeeds. */
 export function finalizeFeeCharge(paymentIntentId: string): void {
-  const charge = db.select().from(feeCharges).where(eq(feeCharges.stripePaymentIntentId, paymentIntentId)).get();
+  const charge =
+    db.select().from(feeCharges).where(eq(feeCharges.stripePaymentIntentId, paymentIntentId)).get() ??
+    db.select().from(feeCharges).where(eq(feeCharges.stripePaynowIntentId, paymentIntentId)).get();
   if (!charge || charge.status !== "pending") return;
 
-  db.update(feeCharges).set({ status: "paid", paidAt: Date.now() }).where(eq(feeCharges.id, charge.id)).run();
+  const paidByPaynow = charge.stripePaynowIntentId === paymentIntentId;
+  db.update(feeCharges)
+    .set({ status: "paid", paidAt: Date.now(), paymentMethod: paidByPaynow ? "paynow" : "card" })
+    .where(eq(feeCharges.id, charge.id))
+    .run();
   db.update(bids).set({ status: "accepted" }).where(eq(bids.id, charge.bidId)).run();
+
+  // Whichever intent didn't get paid is now moot — cancel it so the poster
+  // can't accidentally (or a stray retry can't) pay the same fee twice
+  // through the other method.
+  const siblingIntentId = paidByPaynow ? charge.stripePaymentIntentId : charge.stripePaynowIntentId;
+  if (siblingIntentId) {
+    cancelFeeCharge(siblingIntentId).catch(() => {
+      // Best-effort — an orphaned, never-canceled intent is harmless, it just never gets paid.
+    });
+  }
 
   // Only close the listing (and reject remaining pending bids) once the
   // poster's target headcount has actually been reached.
@@ -87,8 +105,10 @@ export function finalizeFeeCharge(paymentIntentId: string): void {
 
 /** Called from the Stripe webhook if the fee charge fails, or if we cancel it ourselves. */
 export function failFeeCharge(paymentIntentId: string): void {
-  const charge = db.select().from(feeCharges).where(eq(feeCharges.stripePaymentIntentId, paymentIntentId)).get();
-  if (!charge) return;
+  const charge =
+    db.select().from(feeCharges).where(eq(feeCharges.stripePaymentIntentId, paymentIntentId)).get() ??
+    db.select().from(feeCharges).where(eq(feeCharges.stripePaynowIntentId, paymentIntentId)).get();
+  if (!charge || charge.status !== "pending") return;
   db.update(feeCharges).set({ status: "failed" }).where(eq(feeCharges.id, charge.id)).run();
   // The listing/bid were never changed away from "live"/"pending" while the
   // charge was in flight, so there's nothing to revert on them — the bid

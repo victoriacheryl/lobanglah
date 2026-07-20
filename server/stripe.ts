@@ -53,36 +53,62 @@ export async function ensureCustomer(user: { id: number; email: string; name: st
 }
 
 /**
- * Creates the platform-fee PaymentIntent charged to the poster the moment
- * they accept a bid. Automatic capture — the card is charged as soon as the
- * poster confirms via Stripe Elements. No hold, no manual capture step.
+ * Creates the two PaymentIntents behind the platform-fee charge — a
+ * card-only one that drives Stripe's <PaymentElement/>, and a paynow-only
+ * one that drives our own inline QR flow via confirmPayNowPayment. Only one
+ * of the two ever actually gets paid; whichever the poster completes first
+ * "wins", and the caller is responsible for cancelling the other.
+ *
+ * These used to be a single PaymentIntent with
+ * payment_method_types: ["card", "paynow"], on the theory that pinning both
+ * explicitly (rather than relying on automatic_payment_methods, whose
+ * dynamic eligibility engine can silently omit PayNow) guarantees both show
+ * up. That worked, but "both show up" turned out to include PayNow showing
+ * up a second time as a selectable tab inside the Payment Element itself —
+ * Stripe's PaymentElement has no client-side option to hide a payment
+ * method type that's allowed on its underlying PaymentIntent. Splitting into
+ * two intents, one per method, is the only way to keep our custom PayNow
+ * panel while restricting the Payment Element to card only.
  */
-export async function createFeeChargePaymentIntent(params: {
+export async function createFeeChargePaymentIntents(params: {
   bidAmountSgd: number;
   customerId: string;
   listingId: number;
   bidId: number;
-}): Promise<{ paymentIntentId: string; clientSecret: string; feeAmount: number }> {
+}): Promise<{
+  cardPaymentIntentId: string;
+  cardClientSecret: string;
+  paynowPaymentIntentId: string;
+  paynowClientSecret: string;
+  feeAmount: number;
+}> {
   const feeSgd = calculateFeeSgd(params.bidAmountSgd);
-  const intent = await requireStripe().paymentIntents.create({
-    amount: toCents(feeSgd),
-    currency: CURRENCY,
-    customer: params.customerId,
-    // Pinned explicitly instead of automatic_payment_methods: Stripe's
-    // dynamic eligibility engine can silently omit PayNow even when it's
-    // enabled in the Dashboard (it factors in session/device signals beyond
-    // just currency + Dashboard config), so listing both methods by name
-    // guarantees Card and PayNow always both appear in the Payment Element.
-    payment_method_types: ["card", "paynow"],
-    metadata: {
-      lobangListingId: String(params.listingId),
-      lobangBidId: String(params.bidId),
-      lobangKind: "platform_fee",
-    },
-  });
+  const metadata = {
+    lobangListingId: String(params.listingId),
+    lobangBidId: String(params.bidId),
+    lobangKind: "platform_fee",
+  };
+  const [cardIntent, paynowIntent] = await Promise.all([
+    requireStripe().paymentIntents.create({
+      amount: toCents(feeSgd),
+      currency: CURRENCY,
+      customer: params.customerId,
+      payment_method_types: ["card"],
+      metadata,
+    }),
+    requireStripe().paymentIntents.create({
+      amount: toCents(feeSgd),
+      currency: CURRENCY,
+      customer: params.customerId,
+      payment_method_types: ["paynow"],
+      metadata,
+    }),
+  ]);
   return {
-    paymentIntentId: intent.id,
-    clientSecret: intent.client_secret as string,
+    cardPaymentIntentId: cardIntent.id,
+    cardClientSecret: cardIntent.client_secret as string,
+    paynowPaymentIntentId: paynowIntent.id,
+    paynowClientSecret: paynowIntent.client_secret as string,
     feeAmount: feeSgd,
   };
 }
@@ -104,51 +130,36 @@ export async function getPaymentIntentStatus(paymentIntentId: string): Promise<S
   return intent.status;
 }
 
-/**
- * Re-fetches the client secret for an existing PaymentIntent that hasn't
- * succeeded yet — used when the poster reopens the checkout after not
- * completing it the first time (closed the modal, connection dropped,
- * etc.). If the intent predates pinning payment_method_types explicitly
- * (i.e. it was created under automatic_payment_methods and is missing
- * PayNow), this cancels it and creates a fresh PaymentIntent with the same
- * fee amount/customer/metadata and PayNow pinned from the start. The caller
- * must persist the returned paymentIntentId if `recreated` is true, since it
- * will differ from the one passed in.
- */
-export async function retrieveOrUpgradeClientSecret(params: {
-  paymentIntentId: string;
+/** One half of {@link retrieveOrUpgradeClientSecrets} — re-fetches or
+ *  recreates a single method-scoped PaymentIntent. `existingId` is null for
+ *  fee charges created before the paynow intent column existed. */
+async function retrieveOrCreateScopedIntent(params: {
+  existingId: string | null;
+  method: "card" | "paynow";
   customerId: string;
   listingId: number;
   bidId: number;
   feeAmountSgd: number;
 }): Promise<{ paymentIntentId: string; clientSecret: string; recreated: boolean }> {
-  const intent = await requireStripe().paymentIntents.retrieve(params.paymentIntentId);
-  if (intent.status === "succeeded") throw new Error("This fee has already been paid");
-  if (intent.status === "canceled") throw new Error("This payment was canceled — accept the bid again to retry");
-  if (!intent.client_secret) throw new Error("This payment can no longer be retried — accept the bid again");
-
-  if (intent.payment_method_types?.includes("paynow")) {
-    return { paymentIntentId: intent.id, clientSecret: intent.client_secret, recreated: false };
-  }
-
-  // Don't bother trying to update payment_method_types in place: PaymentIntents
-  // created under automatic_payment_methods can silently accept that update
-  // call without erroring, yet Elements still renders based on the intent's
-  // automatic_payment_methods resolution rather than the static list — so an
-  // in-place "success" here is not trustworthy. Cancel the stale intent
-  // (best-effort — an orphaned, never-canceled intent is harmless, it just
-  // never gets paid) and create a fresh one with PayNow pinned from creation,
-  // which is the only path that reliably shows both methods.
-  try {
-    await requireStripe().paymentIntents.cancel(params.paymentIntentId);
-  } catch {
-    // Ignore — already canceled, already processing, etc.
+  if (params.existingId) {
+    const intent = await requireStripe().paymentIntents.retrieve(params.existingId);
+    if (intent.status === "succeeded") throw new Error("This fee has already been paid");
+    if (intent.status !== "canceled" && intent.client_secret && intent.payment_method_types?.includes(params.method)) {
+      return { paymentIntentId: intent.id, clientSecret: intent.client_secret, recreated: false };
+    }
+    // Canceled, missing its client secret, or (for legacy rows) scoped to the
+    // wrong method type — cancel it best-effort and issue a fresh one below.
+    try {
+      await requireStripe().paymentIntents.cancel(params.existingId);
+    } catch {
+      // Already canceled/processing — ignore.
+    }
   }
   const fresh = await requireStripe().paymentIntents.create({
     amount: toCents(params.feeAmountSgd),
     currency: CURRENCY,
     customer: params.customerId,
-    payment_method_types: ["card", "paynow"],
+    payment_method_types: [params.method],
     metadata: {
       lobangListingId: String(params.listingId),
       lobangBidId: String(params.bidId),
@@ -156,6 +167,55 @@ export async function retrieveOrUpgradeClientSecret(params: {
     },
   });
   return { paymentIntentId: fresh.id, clientSecret: fresh.client_secret as string, recreated: true };
+}
+
+/**
+ * Re-fetches (or, if needed, recreates) the client secrets for both of a fee
+ * charge's PaymentIntents — used when the poster reopens the checkout tab
+ * after not completing payment the first time. `existingPaynowId` may be
+ * null for fee charges created before the two-intent split existed.
+ */
+export async function retrieveOrUpgradeClientSecrets(params: {
+  existingCardId: string | null;
+  existingPaynowId: string | null;
+  customerId: string;
+  listingId: number;
+  bidId: number;
+  feeAmountSgd: number;
+}): Promise<{
+  cardPaymentIntentId: string;
+  cardClientSecret: string;
+  cardRecreated: boolean;
+  paynowPaymentIntentId: string;
+  paynowClientSecret: string;
+  paynowRecreated: boolean;
+}> {
+  const [card, paynow] = await Promise.all([
+    retrieveOrCreateScopedIntent({
+      existingId: params.existingCardId,
+      method: "card",
+      customerId: params.customerId,
+      listingId: params.listingId,
+      bidId: params.bidId,
+      feeAmountSgd: params.feeAmountSgd,
+    }),
+    retrieveOrCreateScopedIntent({
+      existingId: params.existingPaynowId,
+      method: "paynow",
+      customerId: params.customerId,
+      listingId: params.listingId,
+      bidId: params.bidId,
+      feeAmountSgd: params.feeAmountSgd,
+    }),
+  ]);
+  return {
+    cardPaymentIntentId: card.paymentIntentId,
+    cardClientSecret: card.clientSecret,
+    cardRecreated: card.recreated,
+    paynowPaymentIntentId: paynow.paymentIntentId,
+    paynowClientSecret: paynow.clientSecret,
+    paynowRecreated: paynow.recreated,
+  };
 }
 
 export function constructWebhookEvent(rawBody: Buffer, signature: string): Stripe.Event {

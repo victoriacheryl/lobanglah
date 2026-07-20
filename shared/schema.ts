@@ -317,7 +317,16 @@ export const feeCharges = sqliteTable("fee_charges", {
   createdAt: integer("created_at").notNull(),
   paidAt: integer("paid_at"),
   // Stripe fields (only populated once real payments are enabled).
+  // Two separate PaymentIntents are created for the same fee — one scoped to
+  // "card" only (driving Stripe's <PaymentElement/>) and one scoped to
+  // "paynow" only (driving our own inline QR flow via confirmPayNowPayment).
+  // Stripe's PaymentElement has no client-side option to hide a payment
+  // method type that's allowed on its PaymentIntent, so a single shared
+  // intent listing both types made PayNow show up twice — once in our QR
+  // panel, once as a selectable tab inside the card form. Whichever intent
+  // the poster actually pays through wins; the other is cancelled at that point.
   stripePaymentIntentId: text("stripe_payment_intent_id"),
+  stripePaynowIntentId: text("stripe_paynow_intent_id"),
   // How the poster paid the platform fee: "card" or "paynow" (simulated flow),
   // or "stripe" once real Stripe payments are enabled. Null while pending.
   paymentMethod: text("payment_method", { enum: ["card", "paynow", "stripe"] }),
@@ -346,6 +355,7 @@ export const notifications = sqliteTable("notifications", {
       "fee_paid",
       "listing_approved",
       "listing_rejected",
+      "listing_expired",
       "announcement",
     ],
   }).notNull(),
@@ -366,9 +376,24 @@ export type Notification = typeof notifications.$inferSelect;
 export const createAnnouncementSchema = z.object({
   title: z.string().min(1).max(120),
   body: z.string().min(1).max(500),
+  // Epoch ms. Omitted (or in the past) publishes immediately; a future
+  // timestamp holds the announcement back — hidden from the public board and
+  // not yet notified to anyone — until a background sweep releases it.
+  scheduledFor: z.number().int().positive().optional(),
 });
 
 export type CreateAnnouncementInput = z.infer<typeof createAnnouncementSchema>;
+
+export const updateAnnouncementSchema = z.object({
+  title: z.string().min(1).max(120).optional(),
+  body: z.string().min(1).max(500).optional(),
+  // Only changeable while still pending (not yet published) — see
+  // storage.ts's updateAnnouncement. null clears the schedule and publishes
+  // immediately instead of waiting for its release time.
+  scheduledFor: z.number().int().positive().nullable().optional(),
+});
+
+export type UpdateAnnouncementInput = z.infer<typeof updateAnnouncementSchema>;
 
 // A standalone, permanent record of every admin broadcast — separate from the
 // per-user notification rows created alongside it (those live in a user's
@@ -379,6 +404,13 @@ export const announcements = sqliteTable("announcements", {
   title: text("title").notNull(),
   body: text("body").notNull(),
   createdAt: integer("created_at").notNull(),
+  // Null = publish immediately on creation. A future epoch ms value holds
+  // the announcement back until that time.
+  scheduledFor: integer("scheduled_for"),
+  // Null = still pending (hidden from the public board, no notifications
+  // sent yet). Set the moment it actually goes out, whether that's
+  // immediately on creation or later via the scheduler sweep.
+  publishedAt: integer("published_at"),
 });
 
 export type Announcement = typeof announcements.$inferSelect;

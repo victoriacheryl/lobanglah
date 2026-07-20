@@ -1,6 +1,6 @@
 import { useParams, useSearch } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { Card, CardContent } from "@/components/ui/card";
@@ -11,7 +11,6 @@ import { StatusBadge } from "@/components/status-badge";
 import { formatSGD, formatDate, formatDateTime, formatListingNumber } from "@/lib/format";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
@@ -32,7 +31,6 @@ import {
   MapPin,
   Phone,
   User as UserIcon,
-  MessageSquare,
   Pencil,
   Ban,
   RotateCcw,
@@ -73,16 +71,27 @@ export default function ListingDetail() {
     refetchInterval: (query) => (query.state.data?.some((f) => f.status === "pending") ? 3000 : false),
   });
 
-  // Clicking a "new message" notification links here with ?tab=messages
-  // (and, when known, &participant=<userId>) so the reply box is already open
-  // on the right conversation instead of dropping the user on the Bids tab.
+  // Only needed for the admin's "message a participant privately" tool below
+  // — everyone else's conversations are just each bid's own embedded thread.
+  const { data: participants } = useQuery<{ id: number; name: string }[]>({
+    queryKey: [`/api/listings/${listingId}/participants`],
+    enabled: !!user?.isAdmin && !!listing && user.id !== listing.userId,
+    refetchOnMount: "always",
+  });
+
+  // Clicking a "new message" notification links here with
+  // ?participant=<bidderId> so the page scrolls straight to that bidder's
+  // bid-and-conversation card instead of leaving the reader to find it.
   const search = useSearch();
   const searchParams = new URLSearchParams(search);
-  const initialTab = searchParams.get("tab") === "messages" ? "messages" : "bids";
-  const initialParticipant = Number(searchParams.get("participant")) || null;
+  const scrollToParticipant = Number(searchParams.get("participant")) || null;
+  const bidRefs = useRef<Record<number, HTMLDivElement | null>>({});
 
-  const [activeTab, setActiveTab] = useState<"bids" | "messages">(initialTab);
-  const [messageTarget, setMessageTarget] = useState<number | null>(initialParticipant);
+  useEffect(() => {
+    if (!scrollToParticipant) return;
+    bidRefs.current[scrollToParticipant]?.scrollIntoView({ behavior: "smooth", block: "start" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollToParticipant, bids]);
 
   const [bidAmount, setBidAmount] = useState("");
   const [bidMessage, setBidMessage] = useState("");
@@ -344,224 +353,206 @@ export default function ListingDetail() {
       )}
 
       {user && (
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "bids" | "messages")}>
-          <TabsList>
-            <TabsTrigger value="bids" data-testid="tab-bids">Bids</TabsTrigger>
-            <TabsTrigger value="messages" data-testid="tab-messages">Messages</TabsTrigger>
-          </TabsList>
-          <TabsContent value="bids" className="space-y-4 pt-4">
-            {canBid && (
-              <Card>
-                <CardContent className="p-4 space-y-3">
-                  <h3 className="font-medium text-sm">Place a bid</h3>
-                  <Input
-                    data-testid="input-bid-amount"
-                    type="number"
-                    min={1}
-                    step="0.01"
-                    placeholder="Your fee (SGD)"
-                    value={bidAmount}
-                    onChange={(e) => setBidAmount(e.target.value)}
-                  />
-                  <Textarea
-                    data-testid="input-bid-message"
-                    placeholder="A short note about your bid (optional)"
-                    rows={2}
-                    value={bidMessage}
-                    onChange={(e) => setBidMessage(e.target.value)}
-                  />
-                  <Button
-                    className="w-full"
-                    disabled={!bidAmount || bidMutation.isPending}
-                    onClick={() => bidMutation.mutate()}
-                    data-testid="button-submit-bid"
-                  >
-                    {bidMutation.isPending ? "Submitting..." : "Submit bid"}
-                  </Button>
-                  <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-                    <ShieldCheck className="h-3.5 w-3.5" /> If the poster accepts your bid, they pay a small platform fee — you'll then arrange the job payment with them directly.
-                  </p>
-                </CardContent>
-              </Card>
-            )}
-            {hasBid && listing.status === "live" && (
-              <p className="text-sm text-muted-foreground">You've already placed a bid on this listing.</p>
-            )}
-            <div className="space-y-2">
-              {bids?.length === 0 && <p className="text-sm text-muted-foreground">No bids yet.</p>}
-              {bids?.map((b) => (
-                <Card key={b.id} data-testid={`card-bid-${b.id}`}>
-                  <CardContent className="p-4 flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-sm">{canSeeBidderNames ? b.bidderName : "You"}</span>
-                        <StatusBadge status={b.status} context="bid" />
+        <div className="space-y-4">
+          {canBid && (
+            <Card>
+              <CardContent className="p-4 space-y-3">
+                <h3 className="font-medium text-sm">Place a bid</h3>
+                <Input
+                  data-testid="input-bid-amount"
+                  type="number"
+                  min={1}
+                  step="0.01"
+                  placeholder="Your fee (SGD)"
+                  value={bidAmount}
+                  onChange={(e) => setBidAmount(e.target.value)}
+                />
+                <Textarea
+                  data-testid="input-bid-message"
+                  placeholder="A short note about your bid (optional)"
+                  rows={2}
+                  value={bidMessage}
+                  onChange={(e) => setBidMessage(e.target.value)}
+                />
+                <Button
+                  className="w-full"
+                  disabled={!bidAmount || bidMutation.isPending}
+                  onClick={() => bidMutation.mutate()}
+                  data-testid="button-submit-bid"
+                >
+                  {bidMutation.isPending ? "Submitting..." : "Submit bid"}
+                </Button>
+                <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                  <ShieldCheck className="h-3.5 w-3.5" /> If the poster accepts your bid, they pay a small platform fee — you'll then arrange the job payment with them directly.
+                </p>
+              </CardContent>
+            </Card>
+          )}
+          {hasBid && listing.status === "live" && (
+            <p className="text-sm text-muted-foreground">You've already placed a bid on this listing.</p>
+          )}
+
+          {isAdmin && !isOwner && participants && participants.length > 0 && (
+            <AdminPrivateMessageCard listingId={listingId} participants={participants} currentUserId={user?.id} />
+          )}
+
+          <div className="space-y-3">
+            <h2 className="font-medium text-sm text-muted-foreground">Bids &amp; messages</h2>
+            {bids?.length === 0 && <p className="text-sm text-muted-foreground">No bids yet.</p>}
+            {bids?.map((b) => {
+              // The other real party in this bid's conversation — from the
+              // poster's or the bidder's own point of view, never the admin's
+              // (who isn't a real party, and gets the thread-tag mechanism
+              // inside BidThread instead).
+              const otherUserId = isOwner ? b.bidderId : listing.userId;
+              const otherName = isOwner ? b.bidderName : listing.ownerName;
+              return (
+                <Card key={b.id} data-testid={`card-bid-${b.id}`} ref={(el) => (bidRefs.current[b.bidderId] = el)}>
+                  <CardContent className="p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-sm">{canSeeBidderNames ? b.bidderName : "You"}</span>
+                          <StatusBadge status={b.status} context="bid" />
+                        </div>
+                        {b.message && <p className="text-xs text-muted-foreground mt-1">{b.message}</p>}
+                        <p className="text-[11px] text-muted-foreground mt-1">{formatDate(b.createdAt)}</p>
                       </div>
-                      {b.message && <p className="text-xs text-muted-foreground mt-1">{b.message}</p>}
-                      <p className="text-[11px] text-muted-foreground mt-1">{formatDate(b.createdAt)}</p>
-                    </div>
-                    <div className="text-right shrink-0 flex flex-col items-end gap-2">
-                      <span className="font-display font-semibold text-primary">{formatSGD(b.amount)}</span>
-                      <div className="flex items-center gap-2">
-                        {canSeeBidderNames && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="gap-1.5"
-                            onClick={() => {
-                              setMessageTarget(b.bidderId);
-                              setActiveTab("messages");
-                            }}
-                            data-testid={`button-message-bidder-${b.id}`}
-                          >
-                            <MessageSquare className="h-3.5 w-3.5" /> Message
-                          </Button>
-                        )}
-                        {isOwner && listing.status === "live" && b.status === "pending" && (
-                          <>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => rejectMutation.mutate(b.id)}
-                              disabled={acceptMutation.isPending || rejectMutation.isPending}
-                              data-testid={`button-reject-bid-${b.id}`}
-                            >
-                              Reject
-                            </Button>
-                            <Button
-                              size="sm"
-                              onClick={() => acceptMutation.mutate(b.id)}
-                              disabled={acceptMutation.isPending || rejectMutation.isPending}
-                              data-testid={`button-accept-bid-${b.id}`}
-                            >
-                              Accept
-                            </Button>
-                          </>
-                        )}
-                        {/* Bidder self-service on their own bid — only shown to the
-                            bidder themselves, never the poster or an admin (who get
-                            their own, broader controls below instead). */}
-                        {!isAdmin && !isOwner && user && b.bidderId === user.id && (
-                          <>
-                            {b.status === "pending" && (
-                              <>
+                      <div className="text-right shrink-0 flex flex-col items-end gap-2">
+                        <span className="font-display font-semibold text-primary">{formatSGD(b.amount)}</span>
+                        <div className="flex items-center gap-2 flex-wrap justify-end">
+                          {isOwner && listing.status === "live" && b.status === "pending" && (
+                            <>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => rejectMutation.mutate(b.id)}
+                                disabled={acceptMutation.isPending || rejectMutation.isPending}
+                                data-testid={`button-reject-bid-${b.id}`}
+                              >
+                                Reject
+                              </Button>
+                              <Button
+                                size="sm"
+                                onClick={() => acceptMutation.mutate(b.id)}
+                                disabled={acceptMutation.isPending || rejectMutation.isPending}
+                                data-testid={`button-accept-bid-${b.id}`}
+                              >
+                                Accept
+                              </Button>
+                            </>
+                          )}
+                          {/* Bidder self-service on their own bid — only shown to the
+                              bidder themselves, never the poster or an admin (who get
+                              their own, broader controls below instead). */}
+                          {!isAdmin && !isOwner && user && b.bidderId === user.id && (
+                            <>
+                              {b.status === "pending" && (
+                                <>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="gap-1.5"
+                                    onClick={() => setEditingBid(b)}
+                                    data-testid={`button-edit-own-bid-${b.id}`}
+                                  >
+                                    <Pencil className="h-3.5 w-3.5" /> Edit
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="gap-1.5"
+                                    onClick={() => cancelBidMutation.mutate({ id: b.id, isSelf: true })}
+                                    disabled={cancelBidMutation.isPending}
+                                    data-testid={`button-cancel-own-bid-${b.id}`}
+                                  >
+                                    <Ban className="h-3.5 w-3.5" /> Cancel
+                                  </Button>
+                                </>
+                              )}
+                              {b.status === "cancelled" &&
+                                (b.reopenRequested ? (
+                                  <span className="text-xs text-muted-foreground">Reopen requested</span>
+                                ) : (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="gap-1.5"
+                                    onClick={() => requestReopenMutation.mutate(b.id)}
+                                    disabled={requestReopenMutation.isPending}
+                                    data-testid={`button-request-reopen-bid-${b.id}`}
+                                  >
+                                    <RotateCcw className="h-3.5 w-3.5" /> Ask to reopen
+                                  </Button>
+                                ))}
+                            </>
+                          )}
+                          {/* Admin moderation — full control over every bid on this
+                              listing, independent of the poster's accept/reject. */}
+                          {isAdmin && (
+                            <>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="gap-1.5"
+                                onClick={() => setEditingBid(b)}
+                                data-testid={`button-admin-edit-bid-${b.id}`}
+                              >
+                                <Pencil className="h-3.5 w-3.5" /> Edit
+                              </Button>
+                              {b.status === "cancelled" ? (
                                 <Button
                                   size="sm"
                                   variant="outline"
                                   className="gap-1.5"
-                                  onClick={() => setEditingBid(b)}
-                                  data-testid={`button-edit-own-bid-${b.id}`}
+                                  onClick={() => reopenBidMutation.mutate(b.id)}
+                                  disabled={reopenBidMutation.isPending}
+                                  data-testid={`button-admin-reopen-bid-${b.id}`}
                                 >
-                                  <Pencil className="h-3.5 w-3.5" /> Edit
+                                  <RotateCcw className="h-3.5 w-3.5" /> Reopen
                                 </Button>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="gap-1.5"
-                                  onClick={() => cancelBidMutation.mutate({ id: b.id, isSelf: true })}
-                                  disabled={cancelBidMutation.isPending}
-                                  data-testid={`button-cancel-own-bid-${b.id}`}
-                                >
-                                  <Ban className="h-3.5 w-3.5" /> Cancel
-                                </Button>
-                              </>
-                            )}
-                            {b.status === "cancelled" &&
-                              (b.reopenRequested ? (
-                                <span className="text-xs text-muted-foreground">Reopen requested</span>
                               ) : (
                                 <Button
                                   size="sm"
                                   variant="outline"
                                   className="gap-1.5"
-                                  onClick={() => requestReopenMutation.mutate(b.id)}
-                                  disabled={requestReopenMutation.isPending}
-                                  data-testid={`button-request-reopen-bid-${b.id}`}
+                                  onClick={() => cancelBidMutation.mutate({ id: b.id, isSelf: false })}
+                                  disabled={cancelBidMutation.isPending}
+                                  data-testid={`button-admin-cancel-bid-${b.id}`}
                                 >
-                                  <RotateCcw className="h-3.5 w-3.5" /> Ask to reopen
+                                  <Ban className="h-3.5 w-3.5" /> Cancel
                                 </Button>
-                              ))}
-                          </>
-                        )}
-                        {/* Admin moderation — full control over every bid on this
-                            listing, independent of the poster's accept/reject. */}
-                        {isAdmin && (
-                          <>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="gap-1.5"
-                              onClick={() => setEditingBid(b)}
-                              data-testid={`button-admin-edit-bid-${b.id}`}
-                            >
-                              <Pencil className="h-3.5 w-3.5" /> Edit
-                            </Button>
-                            {b.status === "cancelled" ? (
+                              )}
                               <Button
                                 size="sm"
                                 variant="outline"
-                                className="gap-1.5"
-                                onClick={() => reopenBidMutation.mutate(b.id)}
-                                disabled={reopenBidMutation.isPending}
-                                data-testid={`button-admin-reopen-bid-${b.id}`}
+                                className="gap-1.5 text-destructive hover:text-destructive"
+                                onClick={() => setDeletingBid(b)}
+                                data-testid={`button-admin-delete-bid-${b.id}`}
                               >
-                                <RotateCcw className="h-3.5 w-3.5" /> Reopen
+                                <Trash2 className="h-3.5 w-3.5" />
                               </Button>
-                            ) : (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="gap-1.5"
-                                onClick={() => cancelBidMutation.mutate({ id: b.id, isSelf: false })}
-                                disabled={cancelBidMutation.isPending}
-                                data-testid={`button-admin-cancel-bid-${b.id}`}
-                              >
-                                <Ban className="h-3.5 w-3.5" /> Cancel
-                              </Button>
-                            )}
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="gap-1.5 text-destructive hover:text-destructive"
-                              onClick={() => setDeletingBid(b)}
-                              data-testid={`button-admin-delete-bid-${b.id}`}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </>
-                        )}
+                            </>
+                          )}
+                        </div>
                       </div>
                     </div>
+
+                    <BidThread
+                      listingId={listingId}
+                      isAdmin={isAdmin && !isOwner}
+                      threadBidderId={b.bidderId}
+                      posterId={listing.userId}
+                      otherUserId={otherUserId}
+                      otherName={otherName}
+                      currentUserId={user?.id}
+                    />
                   </CardContent>
                 </Card>
-              ))}
-            </div>
-          </TabsContent>
-          <TabsContent value="messages" className="pt-4">
-            {isAdmin && !isOwner ? (
-              // Admins viewing someone else's listing aren't a party to any
-              // thread here, so the regular per-participant view (which is
-              // scoped to "my conversation with X") would show nothing. Give
-              // them a moderation view of every thread instead.
-              <AdminMessagesPanel
-                listingId={listingId}
-                posterId={listing.userId}
-                bids={bids}
-                selectedParticipant={messageTarget}
-                onSelectParticipant={setMessageTarget}
-              />
-            ) : (
-              <MessagesPanel
-                listingId={listingId}
-                isOwner={isOwner}
-                bids={bids}
-                feeCharges={feeCharges}
-                selectedParticipant={messageTarget}
-                onSelectParticipant={setMessageTarget}
-              />
-            )}
-          </TabsContent>
-        </Tabs>
+              );
+            })}
+          </div>
+        </div>
       )}
 
       <EditBidDialog
@@ -721,100 +712,199 @@ function FeeChargePanel({ feeCharge, isPoster, onPayNow }: { feeCharge: FeeCharg
   );
 }
 
-function MessagesPanel({
+type AdminMessage = Message & { senderName: string; recipientName: string };
+
+/**
+ * The conversation for one specific bid, embedded directly under it instead
+ * of behind a separate "Messages" tab — so the poster, bidder, or an admin
+ * can see and reply to that bidder's thread right where the bid itself
+ * lives, without switching views.
+ *
+ * For the poster and the bidder themselves, this is a real conversation —
+ * they're both actual participants, so it's read/sent via the ordinary
+ * messaging endpoints. An admin isn't a real party to the thread, so they
+ * read it via the moderation endpoint (filtered down to just this bidder's
+ * shared thread with the poster) and reply through the thread-tagging
+ * endpoint instead.
+ */
+function BidThread({
   listingId,
-  isOwner,
-  bids,
-  feeCharges,
-  selectedParticipant,
-  onSelectParticipant,
+  isAdmin,
+  threadBidderId,
+  posterId,
+  otherUserId,
+  otherName,
+  currentUserId,
 }: {
   listingId: number;
-  isOwner: boolean;
-  bids?: BidWithBidder[];
-  feeCharges?: FeeCharge[];
-  selectedParticipant: number | null;
-  onSelectParticipant: (id: number) => void;
+  isAdmin: boolean;
+  threadBidderId: number;
+  posterId: number;
+  otherUserId: number;
+  otherName: string;
+  currentUserId?: number;
 }) {
-  const { user } = useAuth();
   const { toast } = useToast();
-  const { data: participants } = useQuery<{ id: number; name: string }[]>({
-    queryKey: [`/api/listings/${listingId}/participants`],
-    refetchOnMount: "always",
-  });
-  const activeParticipant = selectedParticipant ?? participants?.[0]?.id ?? null;
+  const [text, setText] = useState("");
 
   const { data: messages } = useQuery<(Message & { senderName?: string })[]>({
-    queryKey: [`/api/listings/${listingId}/messages/${activeParticipant}`],
-    enabled: !!activeParticipant,
+    queryKey: [`/api/listings/${listingId}/messages/${otherUserId}`],
+    enabled: !isAdmin,
     refetchInterval: 4000,
   });
 
-  const [text, setText] = useState("");
   const sendMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/listings/${listingId}/messages`, {
         content: text,
-        recipientId: activeParticipant,
+        recipientId: otherUserId,
       });
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/listings/${listingId}/messages/${activeParticipant}`] });
+      queryClient.invalidateQueries({ queryKey: [`/api/listings/${listingId}/messages/${otherUserId}`] });
       setText("");
     },
     onError: (err: any) => toast({ title: "Could not send", description: err.message, variant: "destructive" }),
   });
 
-  if (!participants || participants.length === 0) {
-    return <p className="text-sm text-muted-foreground">No conversations yet — bid or wait for bids to start messaging.</p>;
+  const { data: adminMessages } = useQuery<AdminMessage[]>({
+    queryKey: [`/api/admin/listings/${listingId}/messages`],
+    enabled: isAdmin,
+    refetchInterval: 4000,
+  });
+
+  const adminReplyMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/admin/listings/${listingId}/messages/thread`, {
+        content: text,
+        bidderId: threadBidderId,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/admin/listings/${listingId}/messages`] });
+      setText("");
+    },
+    onError: (err: any) => toast({ title: "Could not send", description: err.message, variant: "destructive" }),
+  });
+
+  // Only messages genuinely part of THIS shared poster<->bidder thread — not
+  // any separate private DM an admin may have sent this same bidder (those
+  // stay in the "message a participant privately" tool instead).
+  const threadMessages: (Message & { senderName?: string })[] = isAdmin
+    ? (adminMessages ?? []).filter(
+        (m) =>
+          m.threadBidderId === threadBidderId ||
+          (m.senderId === posterId && m.recipientId === threadBidderId) ||
+          (m.senderId === threadBidderId && m.recipientId === posterId)
+      )
+    : messages ?? [];
+
+  const sending = isAdmin ? adminReplyMutation.isPending : sendMutation.isPending;
+  function handleSend() {
+    if (!text.trim()) return;
+    if (isAdmin) adminReplyMutation.mutate();
+    else sendMutation.mutate();
   }
 
-  const otherName = participants.find((p) => p.id === activeParticipant)?.name ?? "them";
-
-  // The bid tied to this conversation: if you're the poster, it's the bid the
-  // other participant (the bidder) placed; if you're the bidder, it's your
-  // own bid on this listing. Every non-owner participant has exactly one bid
-  // here — that's what makes them a participant in the first place.
-  const conversationBid = bids?.find((b) => (isOwner ? b.bidderId === activeParticipant : b.bidderId === user?.id));
-  const conversationFee = conversationBid ? feeCharges?.find((f) => f.bidId === conversationBid.id) : undefined;
-
   return (
-    <div className="space-y-3">
-      {conversationBid && (
-        <Card className="border-accent/20 bg-accent/5">
-          <CardContent className="p-3 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 min-w-0">
-              <HandCoins className="h-4 w-4 text-accent shrink-0" />
-              <div className="min-w-0">
-                <p className="text-xs font-medium truncate">
-                  Bid {formatSGD(conversationBid.amount)}
-                  {conversationFee ? ` · Fee ${formatSGD(conversationFee.feeAmount)}` : ""}
-                </p>
-                <p className="text-[11px] text-muted-foreground">
-                  {conversationFee
-                    ? conversationFee.status === "paid"
-                      ? `Platform fee paid${conversationFee.paidAt ? ` on ${formatDateTime(conversationFee.paidAt)}` : ""} — contact details unlocked below`
-                      : conversationFee.status === "failed"
-                        ? "Platform fee payment failed — the listing reopened for bids"
-                        : "Bid accepted — platform fee not yet paid"
-                    : conversationBid.status === "pending"
-                      ? "Bid pending — not yet accepted"
-                      : conversationBid.status === "rejected"
-                        ? "This bid was not selected"
-                        : "Bid accepted"}
-                </p>
+    <div className="border-t border-border pt-3 space-y-2">
+      <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Messages</p>
+      <div className="max-h-56 overflow-y-auto space-y-2 flex flex-col-reverse">
+        <div />
+        {[...threadMessages].reverse().map((m) => {
+          const isSelf = m.senderId === currentUserId;
+          const label = isSelf ? "You" : m.senderName ?? otherName;
+          return (
+            <div key={m.id} className={`flex flex-col ${isSelf ? "items-end" : "items-start"}`}>
+              <span className="text-[10px] text-muted-foreground mb-0.5 px-0.5">{label}</span>
+              <div
+                data-testid={`text-message-${m.id}`}
+                className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
+                  isSelf ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"
+                }`}
+              >
+                {m.content}
               </div>
             </div>
-            <StatusBadge status={conversationFee ? conversationFee.status : conversationBid.status} context={conversationFee ? "fee" : "bid"} />
-          </CardContent>
-        </Card>
-      )}
+          );
+        })}
+        {threadMessages.length === 0 && (
+          <p className="text-xs text-muted-foreground text-center py-2">
+            No messages yet. Contact details are automatically hidden — arrange details here in-app.
+          </p>
+        )}
+      </div>
+      <div className="flex gap-2">
+        <Input
+          placeholder="Type a message..."
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && text.trim()) handleSend();
+          }}
+          data-testid={`input-message-${threadBidderId}`}
+        />
+        <Button size="icon" disabled={!text.trim() || sending} onClick={handleSend} data-testid={`button-send-message-${threadBidderId}`}>
+          <Send className="h-4 w-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}
 
-      {participants.length > 1 && (
-        <Select value={activeParticipant ? String(activeParticipant) : undefined} onValueChange={(v) => onSelectParticipant(Number(v))}>
-          <SelectTrigger className="w-56" data-testid="select-conversation">
-            <SelectValue placeholder="Choose conversation" />
+/**
+ * Admin-only: a private, 1:1 message to any participant (the poster or any
+ * bidder) — separate from the per-bid threads above, which are the only
+ * place a reply lands inside the actual shared poster<->bidder conversation.
+ */
+function AdminPrivateMessageCard({
+  listingId,
+  participants,
+  currentUserId,
+}: {
+  listingId: number;
+  participants: { id: number; name: string }[];
+  currentUserId?: number;
+}) {
+  const { toast } = useToast();
+  const [recipient, setRecipient] = useState<number | null>(participants[0]?.id ?? null);
+  const [text, setText] = useState("");
+
+  const { data: messages } = useQuery<(Message & { senderName?: string })[]>({
+    queryKey: [`/api/listings/${listingId}/messages/${recipient}`],
+    enabled: !!recipient,
+    refetchInterval: 4000,
+  });
+
+  const sendMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/listings/${listingId}/messages`, {
+        content: text,
+        recipientId: recipient,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/listings/${listingId}/messages/${recipient}`] });
+      setText("");
+    },
+    onError: (err: any) => toast({ title: "Could not send", description: err.message, variant: "destructive" }),
+  });
+
+  const recipientName = participants.find((p) => p.id === recipient)?.name ?? "them";
+
+  return (
+    <Card className="border-primary/20 bg-primary/5">
+      <CardContent className="p-4 space-y-3">
+        <h3 className="font-medium text-sm">Message a participant privately</h3>
+        <p className="text-xs text-muted-foreground -mt-2">
+          Only you and they will see this. To speak into a bid's own thread instead, reply under that bid below.
+        </p>
+        <Select value={recipient ? String(recipient) : undefined} onValueChange={(v) => setRecipient(Number(v))}>
+          <SelectTrigger className="w-56" data-testid="select-admin-recipient">
+            <SelectValue placeholder="Choose recipient" />
           </SelectTrigger>
           <SelectContent>
             {participants.map((p) => (
@@ -824,259 +914,49 @@ function MessagesPanel({
             ))}
           </SelectContent>
         </Select>
-      )}
-      <Card>
-        <CardContent className="p-4 space-y-3">
-          <div className="max-h-80 overflow-y-auto space-y-2 flex flex-col-reverse">
-            <div />
-            {[...(messages ?? [])].reverse().map((m) => {
-              const isSelf = m.senderId === user?.id;
-              // Ordinarily the other party is whoever this conversation is
-              // with, but an admin message intercepted into this thread comes
-              // from a third party — so trust the message's own sender name
-              // rather than assuming it's always otherName.
-              const label = isSelf ? "You" : m.senderName ?? otherName;
-              return (
-                <div key={m.id} className={`flex flex-col ${isSelf ? "items-end" : "items-start"}`}>
-                  <span className="text-[10px] text-muted-foreground mb-0.5 px-0.5">{label}</span>
-                  <div
-                    data-testid={`text-message-${m.id}`}
-                    className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
-                      isSelf ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"
-                    }`}
-                  >
-                    {m.content}
-                  </div>
+        <div className="max-h-56 overflow-y-auto space-y-2 flex flex-col-reverse">
+          <div />
+          {[...(messages ?? [])].reverse().map((m) => {
+            const isSelf = m.senderId === currentUserId;
+            return (
+              <div key={m.id} className={`flex flex-col ${isSelf ? "items-end" : "items-start"}`}>
+                <span className="text-[10px] text-muted-foreground mb-0.5 px-0.5">{isSelf ? "You" : recipientName}</span>
+                <div
+                  data-testid={`text-admin-dm-${m.id}`}
+                  className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
+                    isSelf ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"
+                  }`}
+                >
+                  {m.content}
                 </div>
-              );
-            })}
-            {(!messages || messages.length === 0) && (
-              <p className="text-xs text-muted-foreground text-center py-4">
-                No messages yet. Contact details are automatically hidden — arrange details here in-app.
-              </p>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <Input
-              data-testid="input-message"
-              placeholder="Type a message..."
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && text.trim()) sendMutation.mutate();
-              }}
-            />
-            <Button size="icon" disabled={!text.trim() || sendMutation.isPending} onClick={() => sendMutation.mutate()} data-testid="button-send-message">
-              <Send className="h-4 w-4" />
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-type AdminMessage = Message & { senderName: string; recipientName: string };
-
-function AdminMessagesPanel({
-  listingId,
-  posterId,
-  bids,
-  selectedParticipant,
-  onSelectParticipant,
-}: {
-  listingId: number;
-  posterId: number;
-  bids?: BidWithBidder[];
-  selectedParticipant: number | null;
-  onSelectParticipant: (id: number) => void;
-}) {
-  const { toast } = useToast();
-  const { data: messages } = useQuery<AdminMessage[]>({
-    queryKey: [`/api/admin/listings/${listingId}/messages`],
-    refetchOnMount: "always",
-    refetchInterval: 4000,
-  });
-
-  // Admins aren't a party to any existing thread here, but they can still
-  // reach out directly to the poster or any bidder — same underlying
-  // messaging endpoint everyone else uses, just reachable from the
-  // moderation view instead of a personal conversation.
-  const { data: participants } = useQuery<{ id: number; name: string }[]>({
-    queryKey: [`/api/listings/${listingId}/participants`],
-    refetchOnMount: "always",
-  });
-  const nameOf = (id: number) => participants?.find((p) => p.id === id)?.name ?? "Unknown";
-  const bidderIds = new Set((bids ?? []).map((b) => b.bidderId));
-
-  const [text, setText] = useState("");
-  const activeRecipient = selectedParticipant ?? participants?.[0]?.id ?? null;
-
-  // This composer is always a private, 1:1 message to whoever is picked —
-  // separate and only visible to the admin and that one person. It's
-  // deliberately distinct from "reply in thread" below, which is the only
-  // way to post into a shared poster<->bidder chat. Keeping the two apart
-  // means admins get both a private channel to every participant and a way
-  // to speak into an existing conversation, rather than one replacing the
-  // other.
-  const sendMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/listings/${listingId}/messages`, {
-        content: text,
-        recipientId: activeRecipient,
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/admin/listings/${listingId}/messages`] });
-      setText("");
-      toast({ title: "Message sent" });
-    },
-    onError: (err: any) => toast({ title: "Could not send", description: err.message, variant: "destructive" }),
-  });
-
-  // Reply text is kept per-thread (keyed by the bidder's id) so switching
-  // between thread cards doesn't clobber a half-typed reply in another one.
-  const [replyText, setReplyText] = useState<Record<number, string>>({});
-  const replyMutation = useMutation({
-    mutationFn: async ({ bidderId, content }: { bidderId: number; content: string }) => {
-      const res = await apiRequest("POST", `/api/admin/listings/${listingId}/messages/thread`, {
-        content,
-        bidderId,
-      });
-      return res.json();
-    },
-    onSuccess: (_data, vars) => {
-      queryClient.invalidateQueries({ queryKey: [`/api/admin/listings/${listingId}/messages`] });
-      setReplyText((prev) => ({ ...prev, [vars.bidderId]: "" }));
-    },
-    onError: (err: any) => toast({ title: "Could not send", description: err.message, variant: "destructive" }),
-  });
-
-  // Group messages by the real poster<->bidder thread they belong to, not by
-  // literal sender/recipient — a thread-tagged admin message has recipientId
-  // set to the bidder (or wherever), which would otherwise land in its own
-  // separate card instead of merging into the poster & bidder's shared chat.
-  // Only genuinely private messages (neither party a bidder, e.g. admin
-  // talking to the poster one-on-one about something unrelated to a bid) keep
-  // their own literal-pair card.
-  const threads = new Map<
-    string,
-    { key: string; bidderId: number | null; aId: number; bId: number; a: string; b: string; messages: AdminMessage[] }
-  >();
-  for (const m of messages ?? []) {
-    let bidderId: number | null = null;
-    if (m.threadBidderId != null) {
-      bidderId = m.threadBidderId;
-    } else {
-      const other = m.senderId === posterId ? m.recipientId : m.recipientId === posterId ? m.senderId : null;
-      if (other != null && bidderIds.has(other)) bidderId = other;
-    }
-    const key = bidderId != null ? `bidder-${bidderId}` : `pair-${[m.senderId, m.recipientId].sort((x, y) => x - y).join("-")}`;
-    if (!threads.has(key)) {
-      const [aId, bId] = bidderId != null ? [posterId, bidderId] : [m.senderId, m.recipientId].sort((x, y) => x - y);
-      const a = bidderId != null ? nameOf(aId) : m.senderId === aId ? m.senderName : m.recipientName;
-      const b = bidderId != null ? nameOf(bId) : m.senderId === bId ? m.senderName : m.recipientName;
-      threads.set(key, { key, bidderId, aId, bId, a, b, messages: [] });
-    }
-    threads.get(key)!.messages.push(m);
-  }
-
-  return (
-    <div className="space-y-4">
-      {participants && participants.length > 0 && (
-        <Card className="border-primary/20 bg-primary/5">
-          <CardContent className="p-4 space-y-3">
-            <h3 className="font-medium text-sm">Message a participant privately</h3>
-            <p className="text-xs text-muted-foreground -mt-2">Only you and they will see this. To speak into an existing chat instead, reply under that thread below.</p>
-            <Select
-              value={activeRecipient ? String(activeRecipient) : undefined}
-              onValueChange={(v) => onSelectParticipant(Number(v))}
-            >
-              <SelectTrigger className="w-56" data-testid="select-admin-recipient">
-                <SelectValue placeholder="Choose recipient" />
-              </SelectTrigger>
-              <SelectContent>
-                {participants.map((p) => (
-                  <SelectItem key={p.id} value={String(p.id)}>
-                    {p.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <div className="flex gap-2">
-              <Input
-                data-testid="input-admin-message"
-                placeholder="Type a message..."
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && text.trim() && activeRecipient) sendMutation.mutate();
-                }}
-              />
-              <Button
-                size="icon"
-                disabled={!text.trim() || !activeRecipient || sendMutation.isPending}
-                onClick={() => sendMutation.mutate()}
-                data-testid="button-send-admin-message"
-              >
-                <Send className="h-4 w-4" />
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {(!messages || messages.length === 0) ? (
-        <p className="text-sm text-muted-foreground">No messages have been exchanged on this listing yet.</p>
-      ) : (
-        Array.from(threads.values()).map((thread) => (
-          <Card key={thread.key} data-testid={`card-admin-thread-${thread.key}`}>
-            <CardContent className="p-4 space-y-3">
-              <p className="text-xs font-medium text-muted-foreground">
-                {thread.a} & {thread.b} · {thread.messages.length} message{thread.messages.length === 1 ? "" : "s"}
-              </p>
-              <div className="space-y-2.5 max-h-80 overflow-y-auto">
-                {thread.messages.map((m) => (
-                  <div key={m.id} data-testid={`text-admin-message-${m.id}`}>
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-sm font-medium">{m.senderName}</span>
-                      <span className="text-[10px] text-muted-foreground">{formatDateTime(m.createdAt)}</span>
-                    </div>
-                    <p className="text-sm text-muted-foreground">{m.content}</p>
-                  </div>
-                ))}
               </div>
-              {thread.bidderId != null && (
-                <div className="flex gap-2 border-t border-border pt-3">
-                  <Input
-                    data-testid={`input-admin-reply-thread-${thread.bidderId}`}
-                    placeholder={`Reply in ${thread.a} & ${thread.b}'s chat...`}
-                    value={replyText[thread.bidderId] ?? ""}
-                    onChange={(e) => setReplyText((prev) => ({ ...prev, [thread.bidderId as number]: e.target.value }))}
-                    onKeyDown={(e) => {
-                      const val = replyText[thread.bidderId as number]?.trim();
-                      if (e.key === "Enter" && val) replyMutation.mutate({ bidderId: thread.bidderId as number, content: val });
-                    }}
-                  />
-                  <Button
-                    size="icon"
-                    disabled={!replyText[thread.bidderId]?.trim() || replyMutation.isPending}
-                    onClick={() => {
-                      const val = replyText[thread.bidderId as number]?.trim();
-                      if (val) replyMutation.mutate({ bidderId: thread.bidderId as number, content: val });
-                    }}
-                    data-testid={`button-admin-reply-thread-${thread.bidderId}`}
-                  >
-                    <Send className="h-4 w-4" />
-                  </Button>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        ))
-      )}
-    </div>
+            );
+          })}
+          {(!messages || messages.length === 0) && (
+            <p className="text-xs text-muted-foreground text-center py-2">No messages yet.</p>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <Input
+            data-testid="input-admin-message"
+            placeholder="Type a message..."
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && text.trim() && recipient) sendMutation.mutate();
+            }}
+          />
+          <Button
+            size="icon"
+            disabled={!text.trim() || !recipient || sendMutation.isPending}
+            onClick={() => sendMutation.mutate()}
+            data-testid="button-send-admin-message"
+          >
+            <Send className="h-4 w-4" />
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

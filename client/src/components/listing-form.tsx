@@ -26,7 +26,7 @@ export function ListingForm({
   defaultValues,
   onSubmit,
   submitting,
-  submitLabel = "Post listing",
+  submitLabel = "Post Lobang",
 }: {
   defaultValues?: Partial<InsertListing>;
   onSubmit: (data: InsertListing) => void;
@@ -192,7 +192,8 @@ export function ListingForm({
                 />
               </FormControl>
               <p className="text-xs text-muted-foreground">
-                E.g. if you need 3 helpers, set this to 3 — the listing stays open until you've accepted that many bids.
+                E.g. if you need 3 helpers, set this to 3 — the posting stays open for 7 days, or until you've
+                accepted that many bids, whichever earlier.
               </p>
               <FormMessage />
             </FormItem>
