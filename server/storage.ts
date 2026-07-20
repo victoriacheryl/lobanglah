@@ -20,6 +20,7 @@ import type {
   Announcement,
   CreateAdminInput,
   AdminUpdateUserInput,
+  BidUpdateInput,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
@@ -560,7 +561,12 @@ export interface IStorage {
   getBid(id: number): Promise<Bid | undefined>;
   acceptBid(bidId: number, posterId: number): Promise<{ listing: Listing; feeCharge: FeeCharge; clientSecret?: string }>;
   rejectBid(bidId: number, posterId: number): Promise<Bid>;
+  updateBid(id: number, bidderId: number, patch: BidUpdateInput): Promise<Bid>;
+  cancelBid(id: number, bidderId: number): Promise<Bid>;
+  requestReopenBid(id: number, bidderId: number): Promise<Bid>;
   adminUpdateBid(id: number, patch: { amount?: number; message?: string }): Promise<Bid | undefined>;
+  adminCancelBid(id: number): Promise<Bid>;
+  adminReopenBid(id: number): Promise<Bid>;
   adminDeleteBid(id: number): Promise<void>;
 
   // stripe fee-charge finalization (real-payments flow)
@@ -1084,6 +1090,64 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
+  /** Bidder self-service: correct their own bid's amount and/or message
+   *  while it's still pending — e.g. fixing a typo before the poster
+   *  reviews it. Once a bid has moved past pending (accepted, rejected, or
+   *  cancelled) it can no longer be self-edited; the bidder would need an
+   *  admin's help instead. */
+  async updateBid(id: number, bidderId: number, patch: BidUpdateInput): Promise<Bid> {
+    const bid = await this.getBid(id);
+    if (!bid) throw new Error("Bid not found");
+    if (bid.bidderId !== bidderId) throw new Error("You can only edit your own bid");
+    if (bid.status !== "pending") throw new Error("Only a pending bid can be edited");
+    return db.update(bids).set(patch).where(eq(bids.id, id)).returning().get();
+  }
+
+  /** Bidder self-service: withdraw their own still-pending bid. Unlike
+   *  adminDeleteBid this keeps the bid on record (status "cancelled")
+   *  instead of erasing it, so there's a trail and the bidder can ask an
+   *  admin to reopen it later if they change their mind. */
+  async cancelBid(id: number, bidderId: number): Promise<Bid> {
+    const bid = await this.getBid(id);
+    if (!bid) throw new Error("Bid not found");
+    if (bid.bidderId !== bidderId) throw new Error("You can only cancel your own bid");
+    if (bid.status !== "pending") throw new Error("Only a pending bid can be cancelled");
+    return db
+      .update(bids)
+      .set({ status: "cancelled", reopenRequested: false })
+      .where(eq(bids.id, id))
+      .returning()
+      .get();
+  }
+
+  /** Bidder self-service: flag their own cancelled bid for admin attention —
+   *  only an admin can actually put it back to pending (adminReopenBid), so
+   *  this just raises a hand and notifies every admin, mirroring how a new
+   *  listing needing review notifies every admin. */
+  async requestReopenBid(id: number, bidderId: number): Promise<Bid> {
+    const bid = await this.getBid(id);
+    if (!bid) throw new Error("Bid not found");
+    if (bid.bidderId !== bidderId) throw new Error("You can only request this for your own bid");
+    if (bid.status !== "cancelled") throw new Error("Only a cancelled bid can be requested to reopen");
+    if (bid.reopenRequested) throw new Error("You've already asked an admin to reopen this bid");
+
+    const updated = db.update(bids).set({ reopenRequested: true }).where(eq(bids.id, id)).returning().get();
+
+    const listing = await this.getListing(bid.listingId);
+    const admins = await this.getAdmins();
+    for (const admin of admins) {
+      await this.createNotification(
+        admin.id,
+        "bid_reopen_requested",
+        "Bid reopen requested",
+        `A bidder asked to reopen their cancelled bid${listing ? ` on "${listing.title}"` : ""}.`,
+        bid.listingId
+      );
+    }
+
+    return updated;
+  }
+
   /** Admin moderation: correct a bid's amount and/or message on the bidder's
    *  behalf (e.g. fixing a typo reported over the phone). Deliberately doesn't
    *  touch status — accept/reject remain the only way a bid's lifecycle
@@ -1099,6 +1163,67 @@ export class DatabaseStorage implements IStorage {
       }
     }
     return db.update(bids).set(patch).where(eq(bids.id, id)).returning().get();
+  }
+
+  /** Admin moderation: cancel a bid without erasing it — status becomes
+   *  "cancelled", kept on record (unlike adminDeleteBid) so it can be
+   *  reopened later. Distinct from rejectBid, which is the poster's own
+   *  choice to decline a bid they reviewed. Refuses once the fee's already
+   *  been paid, same guard as adminUpdateBid/adminDeleteBid. */
+  async adminCancelBid(id: number): Promise<Bid> {
+    const bid = await this.getBid(id);
+    if (!bid) throw new Error("Bid not found");
+    if (bid.status === "cancelled") throw new Error("This bid is already cancelled");
+    const charges = db.select().from(feeCharges).where(eq(feeCharges.bidId, id)).all();
+    if (charges.some((f) => f.status === "paid")) {
+      throw new Error("This bid's platform fee has already been paid and can't be cancelled");
+    }
+
+    const updated = db
+      .update(bids)
+      .set({ status: "cancelled", reopenRequested: false })
+      .where(eq(bids.id, id))
+      .returning()
+      .get();
+
+    const listing = await this.getListing(bid.listingId);
+    await this.createNotification(
+      bid.bidderId,
+      "bid_cancelled",
+      "Your bid was cancelled",
+      `An admin cancelled your bid${listing ? ` on "${listing.title}"` : ""}. Reach out via Contact Us if you have questions.`,
+      bid.listingId
+    );
+
+    return updated;
+  }
+
+  /** Admin moderation: put a cancelled bid back to pending so the poster can
+   *  consider it again — the only way a cancelled bid's lifecycle can move
+   *  forward again, whether the bidder asked for it (reopenRequested) or the
+   *  admin is acting on their own. */
+  async adminReopenBid(id: number): Promise<Bid> {
+    const bid = await this.getBid(id);
+    if (!bid) throw new Error("Bid not found");
+    if (bid.status !== "cancelled") throw new Error("Only a cancelled bid can be reopened");
+
+    const updated = db
+      .update(bids)
+      .set({ status: "pending", reopenRequested: false })
+      .where(eq(bids.id, id))
+      .returning()
+      .get();
+
+    const listing = await this.getListing(bid.listingId);
+    await this.createNotification(
+      bid.bidderId,
+      "bid_reopened",
+      "Your bid was reopened",
+      `An admin reopened your bid${listing ? ` on "${listing.title}"` : ""} — it's pending again.`,
+      bid.listingId
+    );
+
+    return updated;
   }
 
   /** Admin moderation: remove a single bid (e.g. spam, a mistaken bid, or one

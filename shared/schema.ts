@@ -231,9 +231,17 @@ export const bids = sqliteTable("bids", {
   bidderId: integer("bidder_id").notNull(),
   amount: real("amount").notNull(),
   message: text("message").notNull().default(""),
-  status: text("status", { enum: ["pending", "accepted", "rejected"] })
+  // "cancelled" = withdrawn by the bidder or an admin, but kept on record
+  // (unlike a hard admin delete) — distinct from "rejected", which is the
+  // poster actively declining a bid they reviewed. Only an admin can move a
+  // cancelled bid back to "pending" (see reopenRequested below).
+  status: text("status", { enum: ["pending", "accepted", "rejected", "cancelled"] })
     .notNull()
     .default("pending"),
+  // Set when a bidder asks an admin to reopen their own cancelled bid — the
+  // bidder can't reopen it themselves, only flag it for admin attention.
+  // Cleared whenever the bid is reopened or cancelled again.
+  reopenRequested: integer("reopen_requested", { mode: "boolean" }).notNull().default(false),
   createdAt: integer("created_at").notNull(),
 });
 
@@ -246,13 +254,20 @@ export type Bid = typeof bids.$inferSelect;
 
 // Admin moderation: correcting a bid's amount/message on a bidder's behalf
 // (e.g. a typo reported over the phone). Status changes still only happen
-// through accept/reject, not this.
+// through accept/reject/cancel/reopen, not this.
 export const adminUpdateBidSchema = z.object({
   amount: z.number().positive().optional(),
   message: z.string().max(1000).optional(),
 });
 
 export type AdminUpdateBidInput = z.infer<typeof adminUpdateBidSchema>;
+
+// Bidder self-service: same shape as adminUpdateBidSchema, but enforced
+// against their own bid and only while it's still pending — see
+// storage.updateBid.
+export const bidUpdateSchema = adminUpdateBidSchema;
+
+export type BidUpdateInput = z.infer<typeof bidUpdateSchema>;
 
 // ---------- Messages ----------
 export const messages = sqliteTable("messages", {
@@ -324,6 +339,9 @@ export const notifications = sqliteTable("notifications", {
       "bid_accepted",
       "bid_rejected",
       "bid_removed",
+      "bid_cancelled",
+      "bid_reopened",
+      "bid_reopen_requested",
       "new_message",
       "fee_paid",
       "listing_approved",

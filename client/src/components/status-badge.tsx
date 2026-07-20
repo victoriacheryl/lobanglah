@@ -6,6 +6,7 @@ const STATUS_STYLES: Record<string, string> = {
   rejected: "bg-destructive/15 text-destructive border-destructive/30",
   closed: "bg-muted text-muted-foreground border-border",
   accepted: "bg-accent/15 text-accent border-accent/30",
+  cancelled: "bg-muted text-muted-foreground border-border",
   paid: "bg-accent/15 text-accent border-accent/30",
   failed: "bg-destructive/15 text-destructive border-destructive/30",
 };
@@ -16,6 +17,7 @@ const STATUS_LABELS: Record<string, string> = {
   rejected: "Rejected",
   closed: "Closed",
   accepted: "Accepted",
+  cancelled: "Cancelled",
   paid: "Fee paid",
   failed: "Payment failed",
 };

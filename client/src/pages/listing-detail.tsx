@@ -1,6 +1,6 @@
 import { useParams, useSearch } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { Card, CardContent } from "@/components/ui/card";
@@ -13,7 +13,31 @@ import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ShieldCheck, CheckCircle2, Send, HandCoins, MapPin, Phone, User as UserIcon, MessageSquare } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  ShieldCheck,
+  CheckCircle2,
+  Send,
+  HandCoins,
+  MapPin,
+  Phone,
+  User as UserIcon,
+  MessageSquare,
+  Pencil,
+  Ban,
+  RotateCcw,
+  Trash2,
+} from "lucide-react";
 import type { Listing, Bid, FeeCharge, Message } from "@shared/schema";
 import { PaymentMethodDialog } from "@/components/payment-method-dialog";
 
@@ -145,6 +169,80 @@ export default function ListingDetail() {
       toast({ title: "Bid rejected", description: "The bidder has been notified." });
     },
     onError: (err: any) => toast({ title: "Could not reject bid", description: err.message, variant: "destructive" }),
+  });
+
+  const [editingBid, setEditingBid] = useState<BidWithBidder | null>(null);
+  const [deletingBid, setDeletingBid] = useState<BidWithBidder | null>(null);
+
+  const invalidateBids = () => queryClient.invalidateQueries({ queryKey: [`/api/listings/${listingId}/bids`] });
+
+  // Self-service edit (own pending bid) and admin edit (any bid) share one
+  // dialog and mutation — which endpoint gets hit depends on whose bid it is.
+  const updateBidMutation = useMutation({
+    mutationFn: async ({ id, isSelf, amount, message }: { id: number; isSelf: boolean; amount: number; message: string }) => {
+      const url = isSelf ? `/api/bids/${id}` : `/api/admin/bids/${id}`;
+      const res = await apiRequest("PATCH", url, { amount, message });
+      return res.json();
+    },
+    onSuccess: () => {
+      invalidateBids();
+      toast({ title: "Bid updated" });
+      setEditingBid(null);
+    },
+    onError: (err: any) => toast({ title: "Could not update bid", description: err.message, variant: "destructive" }),
+  });
+
+  // Withdraw (self) or cancel (admin) a pending bid — kept on record with
+  // status "cancelled" rather than erased.
+  const cancelBidMutation = useMutation({
+    mutationFn: async ({ id, isSelf }: { id: number; isSelf: boolean }) => {
+      const url = isSelf ? `/api/bids/${id}/cancel` : `/api/admin/bids/${id}/cancel`;
+      const res = await apiRequest("POST", url, {});
+      return res.json();
+    },
+    onSuccess: () => {
+      invalidateBids();
+      toast({ title: "Bid cancelled" });
+    },
+    onError: (err: any) => toast({ title: "Could not cancel bid", description: err.message, variant: "destructive" }),
+  });
+
+  // Admin-only: put a cancelled bid back to pending.
+  const reopenBidMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("POST", `/api/admin/bids/${id}/reopen`, {});
+      return res.json();
+    },
+    onSuccess: () => {
+      invalidateBids();
+      toast({ title: "Bid reopened", description: "It's pending again." });
+    },
+    onError: (err: any) => toast({ title: "Could not reopen bid", description: err.message, variant: "destructive" }),
+  });
+
+  // Self-only: flag a cancelled bid for admin attention — only an admin can
+  // actually put it back to pending.
+  const requestReopenMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("POST", `/api/bids/${id}/request-reopen`, {});
+      return res.json();
+    },
+    onSuccess: () => {
+      invalidateBids();
+      toast({ title: "Request sent", description: "An admin will review your request to reopen this bid." });
+    },
+    onError: (err: any) => toast({ title: "Could not send request", description: err.message, variant: "destructive" }),
+  });
+
+  // Admin-only: permanently remove a bid — unlike cancel, this erases it.
+  const deleteBidMutation = useMutation({
+    mutationFn: async (id: number) => apiRequest("DELETE", `/api/admin/bids/${id}`),
+    onSuccess: () => {
+      invalidateBids();
+      toast({ title: "Bid deleted" });
+      setDeletingBid(null);
+    },
+    onError: (err: any) => toast({ title: "Could not delete bid", description: err.message, variant: "destructive" }),
   });
 
   // "Pay now" retry: when Stripe is live, this must always reopen the real
@@ -340,6 +438,98 @@ export default function ListingDetail() {
                             </Button>
                           </>
                         )}
+                        {/* Bidder self-service on their own bid — only shown to the
+                            bidder themselves, never the poster or an admin (who get
+                            their own, broader controls below instead). */}
+                        {!isAdmin && !isOwner && user && b.bidderId === user.id && (
+                          <>
+                            {b.status === "pending" && (
+                              <>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="gap-1.5"
+                                  onClick={() => setEditingBid(b)}
+                                  data-testid={`button-edit-own-bid-${b.id}`}
+                                >
+                                  <Pencil className="h-3.5 w-3.5" /> Edit
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="gap-1.5"
+                                  onClick={() => cancelBidMutation.mutate({ id: b.id, isSelf: true })}
+                                  disabled={cancelBidMutation.isPending}
+                                  data-testid={`button-cancel-own-bid-${b.id}`}
+                                >
+                                  <Ban className="h-3.5 w-3.5" /> Cancel
+                                </Button>
+                              </>
+                            )}
+                            {b.status === "cancelled" &&
+                              (b.reopenRequested ? (
+                                <span className="text-xs text-muted-foreground">Reopen requested</span>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="gap-1.5"
+                                  onClick={() => requestReopenMutation.mutate(b.id)}
+                                  disabled={requestReopenMutation.isPending}
+                                  data-testid={`button-request-reopen-bid-${b.id}`}
+                                >
+                                  <RotateCcw className="h-3.5 w-3.5" /> Ask to reopen
+                                </Button>
+                              ))}
+                          </>
+                        )}
+                        {/* Admin moderation — full control over every bid on this
+                            listing, independent of the poster's accept/reject. */}
+                        {isAdmin && (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="gap-1.5"
+                              onClick={() => setEditingBid(b)}
+                              data-testid={`button-admin-edit-bid-${b.id}`}
+                            >
+                              <Pencil className="h-3.5 w-3.5" /> Edit
+                            </Button>
+                            {b.status === "cancelled" ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="gap-1.5"
+                                onClick={() => reopenBidMutation.mutate(b.id)}
+                                disabled={reopenBidMutation.isPending}
+                                data-testid={`button-admin-reopen-bid-${b.id}`}
+                              >
+                                <RotateCcw className="h-3.5 w-3.5" /> Reopen
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="gap-1.5"
+                                onClick={() => cancelBidMutation.mutate({ id: b.id, isSelf: false })}
+                                disabled={cancelBidMutation.isPending}
+                                data-testid={`button-admin-cancel-bid-${b.id}`}
+                              >
+                                <Ban className="h-3.5 w-3.5" /> Cancel
+                              </Button>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="gap-1.5 text-destructive hover:text-destructive"
+                              onClick={() => setDeletingBid(b)}
+                              data-testid={`button-admin-delete-bid-${b.id}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </>
+                        )}
                       </div>
                     </div>
                   </CardContent>
@@ -373,7 +563,112 @@ export default function ListingDetail() {
           </TabsContent>
         </Tabs>
       )}
+
+      <EditBidDialog
+        bid={editingBid}
+        isSelf={!!user && !!editingBid && editingBid.bidderId === user.id && !isAdmin}
+        onOpenChange={(open) => !open && setEditingBid(null)}
+        onSave={(data) => editingBid && updateBidMutation.mutate({ id: editingBid.id, ...data })}
+        saving={updateBidMutation.isPending}
+      />
+
+      <AlertDialog open={!!deletingBid} onOpenChange={(open) => !open && setDeletingBid(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this bid?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deletingBid && (
+                <>
+                  This permanently removes {deletingBid.bidderName}'s {formatSGD(deletingBid.amount)} bid, along with
+                  any messages tied to it. Unlike cancelling, this can't be undone — use Cancel instead if they might
+                  want it reopened later.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteBidMutation.isPending}
+              onClick={() => deletingBid && deleteBidMutation.mutate(deletingBid.id)}
+              data-testid="button-confirm-delete-bid"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
+  );
+}
+
+function EditBidDialog({
+  bid,
+  isSelf,
+  onOpenChange,
+  onSave,
+  saving,
+}: {
+  bid: BidWithBidder | null;
+  isSelf: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSave: (data: { isSelf: boolean; amount: number; message: string }) => void;
+  saving: boolean;
+}) {
+  const [amount, setAmount] = useState("");
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    if (!bid) return;
+    setAmount(String(bid.amount));
+    setMessage(bid.message);
+  }, [bid?.id]);
+
+  return (
+    <Dialog open={!!bid} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit bid</DialogTitle>
+        </DialogHeader>
+        {bid && (
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">Amount (SGD)</label>
+              <Input
+                type="number"
+                min={1}
+                step="0.01"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                data-testid="input-edit-bid-amount"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">Message</label>
+              <Textarea
+                rows={2}
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                data-testid="input-edit-bid-message"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button
+                disabled={saving || !amount || Number(amount) <= 0}
+                onClick={() => onSave({ isSelf, amount: parseFloat(amount), message })}
+                data-testid="button-save-bid"
+              >
+                {saving ? "Saving..." : "Save changes"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 

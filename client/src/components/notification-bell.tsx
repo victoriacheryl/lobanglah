@@ -4,7 +4,7 @@ import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
-import { Bell, FileCheck2, Gavel, CheckCircle2, HandCoins, XCircle, Megaphone, MessageCircle } from "lucide-react";
+import { Bell, FileCheck2, Gavel, CheckCircle2, HandCoins, XCircle, Megaphone, MessageCircle, RotateCcw, Ban } from "lucide-react";
 import { useState } from "react";
 import type { Notification } from "@shared/schema";
 import { formatDateTime } from "@/lib/format";
@@ -16,12 +16,27 @@ const ICONS: Record<string, React.ElementType> = {
   bid_accepted: CheckCircle2,
   bid_rejected: XCircle,
   bid_removed: XCircle,
+  bid_cancelled: Ban,
+  bid_reopened: RotateCcw,
+  bid_reopen_requested: RotateCcw,
   new_message: MessageCircle,
   fee_paid: HandCoins,
   listing_approved: CheckCircle2,
   listing_rejected: XCircle,
   announcement: Megaphone,
 };
+
+// Every bid-related notification lands the reader on the listing's Bids tab
+// — this is where accept/reject/edit/cancel/reopen all live.
+const BIDS_TAB_TYPES = new Set([
+  "new_bid",
+  "bid_accepted",
+  "bid_rejected",
+  "bid_removed",
+  "bid_cancelled",
+  "bid_reopened",
+  "bid_reopen_requested",
+]);
 
 export function NotificationBell() {
   const { user } = useAuth();
@@ -116,10 +131,10 @@ export function NotificationBell() {
                       const params = new URLSearchParams({ tab: "messages" });
                       if (n.relatedUserId) params.set("participant", String(n.relatedUserId));
                       navigate(`/listings/${n.relatedListingId}?${params.toString()}`);
-                    } else if (n.type === "new_bid" && n.relatedListingId) {
-                      // Land directly on the Bids tab, where the poster can
-                      // accept or reject the new bid — explicit query param
-                      // rather than relying on it being the default tab.
+                    } else if (BIDS_TAB_TYPES.has(n.type) && n.relatedListingId) {
+                      // Land directly on the Bids tab — explicit query param
+                      // rather than relying on it being the default tab —
+                      // where accept/reject/edit/cancel/reopen all live.
                       navigate(`/listings/${n.relatedListingId}?tab=bids`);
                     } else if (n.relatedListingId) {
                       navigate(`/listings/${n.relatedListingId}`);
