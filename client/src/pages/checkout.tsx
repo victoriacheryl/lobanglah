@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Elements, CardElement, useStripe, useElements } from "@stripe/react-stripe-js";
@@ -9,7 +9,7 @@ import { useTheme } from "@/lib/theme";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ShieldCheck, Loader2, CheckCircle2, XCircle, CreditCard, QrCode } from "lucide-react";
+import { ShieldCheck, Loader2, CheckCircle2, XCircle, QrCode } from "lucide-react";
 import { formatSGD } from "@/lib/format";
 
 interface StripeIntentResult {
@@ -29,17 +29,17 @@ interface StripeIntentResult {
  * a charge is pending, so it picks up the "paid" status on its own shortly
  * after this tab reports success.
  *
- * Deliberately NOT using <PaymentElement /> here: that component decides
- * which payment methods to surface using its own IP-derived customer-country
- * check, on top of (and separate from) whatever's allowed on the
- * PaymentIntent itself. That check has been unreliable for PayNow even from
- * genuinely Singapore-based connections. Since the PaymentIntent is already
- * pinned server-side to allow exactly Card + PayNow (see server/stripe.ts),
- * this instead renders two explicit buttons and confirms each one directly
- * via stripe.confirmCardPayment / stripe.confirmPayNowPayment — the lower-
- * level "Direct API" integration Stripe documents for exactly this case —
- * so both methods are always shown regardless of what Stripe's Element
- * thinks the customer's location is.
+ * Layout: PayNow QR code up top (fired automatically on load, no button
+ * press needed to see it), plain Stripe card fields below as the
+ * alternative. PayNow is confirmed directly via stripe.confirmPayNowPayment
+ * rather than <PaymentElement /> — Payment Element decides which methods to
+ * surface using its own IP-derived customer-country check, separate from
+ * whatever's allowed on the PaymentIntent itself, and that check has been
+ * unreliable for PayNow even from genuinely Singapore-based connections.
+ * Calling stripe.confirmPayNowPayment directly (Stripe's "Direct API"
+ * integration) always shows the QR code regardless of that check. Card
+ * still goes through the plain CardElement + stripe.confirmCardPayment,
+ * which never had this problem — Card is never geo-filtered.
  */
 export default function Checkout() {
   const { feeChargeId } = useParams<{ feeChargeId: string }>();
@@ -125,8 +125,6 @@ export default function Checkout() {
   );
 }
 
-type Method = "card" | "paynow";
-
 // CardElement renders inside its own cross-origin iframe, so it can't read
 // this page's CSS custom properties — colors have to be literal values that
 // roughly match --foreground / --muted-foreground for each theme (see
@@ -140,11 +138,11 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
   const stripe = useStripe();
   const elements = useElements();
   const { theme } = useTheme();
-  const [method, setMethod] = useState<Method>("card");
-  const [submitting, setSubmitting] = useState(false);
+  const [cardSubmitting, setCardSubmitting] = useState(false);
+  const [payNowSubmitting, setPayNowSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [succeeded, setSucceeded] = useState(false);
-  const [awaitingPayNowScan, setAwaitingPayNowScan] = useState(false);
+  const payNowFiredRef = useRef(false);
 
   // Fallback finalizer in case the Stripe webhook hasn't (yet) caught this —
   // mirrors the same call the old inline dialog used to make. This tab isn't
@@ -166,12 +164,12 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
     if (!stripe || !elements) return;
     const cardElement = elements.getElement(CardElement);
     if (!cardElement) return;
-    setSubmitting(true);
+    setCardSubmitting(true);
     setError(null);
     const { error: confirmError, paymentIntent } = await stripe.confirmCardPayment(clientSecret, {
       payment_method: { card: cardElement },
     });
-    setSubmitting(false);
+    setCardSubmitting(false);
     if (confirmError) {
       setError(confirmError.message || "Could not charge your card. Please try again.");
       return;
@@ -185,9 +183,8 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
 
   async function handlePayNow() {
     if (!stripe) return;
-    setSubmitting(true);
+    setPayNowSubmitting(true);
     setError(null);
-    setAwaitingPayNowScan(true);
     // Shows Stripe's own modal with the PayNow QR code and resolves once the
     // customer scans it and their bank confirms (or they close the modal).
     // Unlike confirmCardPayment, this call doesn't auto-create a payment
@@ -196,18 +193,28 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
     const { error: confirmError, paymentIntent } = await stripe.confirmPayNowPayment(clientSecret, {
       payment_method: {},
     });
-    setSubmitting(false);
-    setAwaitingPayNowScan(false);
+    setPayNowSubmitting(false);
     if (confirmError) {
       setError(confirmError.message || "PayNow payment wasn't completed. Please try again.");
       return;
     }
     if (paymentIntent && paymentIntent.status === "succeeded") {
       finalize(paymentIntent.id);
-    } else {
-      setError("Payment wasn't completed — try again when you're ready to scan the QR code.");
     }
+    // If neither succeeded nor errored, the customer just closed the QR
+    // modal without paying — leave the "Show PayNow QR code" button so they
+    // can bring it back up whenever they're ready, no error shown.
   }
+
+  // Show the PayNow QR code immediately on load — no button press needed —
+  // the moment Stripe.js is ready. The guard ref keeps this from firing
+  // twice (e.g. React re-renders) since each call opens a new QR modal.
+  useEffect(() => {
+    if (!stripe || payNowFiredRef.current) return;
+    payNowFiredRef.current = true;
+    handlePayNow();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stripe]);
 
   if (succeeded) {
     return (
@@ -225,37 +232,30 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
   }
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-2">
-        <button
-          type="button"
-          onClick={() => {
-            setMethod("card");
-            setError(null);
-          }}
-          className={`flex items-center justify-center gap-2 rounded-lg border p-3 text-sm font-medium transition-colors ${
-            method === "card" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"
-          }`}
-          data-testid="button-method-card"
+    <div className="space-y-6">
+      <div className="space-y-3">
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          <QrCode className="h-4 w-4" /> Pay with PayNow
+        </div>
+        <p className="text-sm text-muted-foreground" data-testid="text-paynow-hint">
+          Scan the QR code with your banking or payment app to complete this payment.
+        </p>
+        <Button
+          className="w-full"
+          variant="outline"
+          onClick={handlePayNow}
+          disabled={!stripe || payNowSubmitting}
+          data-testid="button-confirm-paynow"
         >
-          <CreditCard className="h-4 w-4" /> Card
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setMethod("paynow");
-            setError(null);
-          }}
-          className={`flex items-center justify-center gap-2 rounded-lg border p-3 text-sm font-medium transition-colors ${
-            method === "paynow" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"
-          }`}
-          data-testid="button-method-paynow"
-        >
-          <QrCode className="h-4 w-4" /> PayNow
-        </button>
+          {payNowSubmitting ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : null}
+          {payNowSubmitting ? "Opening QR code..." : "Show PayNow QR code"}
+        </Button>
       </div>
 
-      {method === "card" && (
+      <div className="h-px bg-border" />
+
+      <div className="space-y-3">
+        <div className="text-sm font-medium">Pay with card</div>
         <div className="rounded-lg border border-border p-3">
           <CardElement
             options={{
@@ -269,31 +269,22 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
             }}
           />
         </div>
-      )}
-
-      {method === "paynow" && (
-        <p className="text-sm text-muted-foreground" data-testid="text-paynow-hint">
-          {awaitingPayNowScan
-            ? "Scan the QR code with your banking or payment app to complete this payment."
-            : "You'll be shown a QR code to scan with your banking or payment app."}
-        </p>
-      )}
+        <Button
+          className="w-full"
+          onClick={handlePayCard}
+          disabled={!stripe || !elements || cardSubmitting}
+          data-testid="button-confirm-card"
+        >
+          {cardSubmitting ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : <ShieldCheck className="h-4 w-4 mr-1.5" />}
+          {cardSubmitting ? "Charging..." : "Pay with Card"}
+        </Button>
+      </div>
 
       {error && (
         <p className="text-sm text-destructive" data-testid="text-checkout-error">
           {error}
         </p>
       )}
-
-      <Button
-        className="w-full"
-        onClick={method === "card" ? handlePayCard : handlePayNow}
-        disabled={!stripe || submitting || (method === "card" && !elements)}
-        data-testid="button-confirm-checkout"
-      >
-        {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4 mr-1.5" />}
-        {submitting ? "Processing..." : method === "card" ? "Pay with Card" : "Pay with PayNow"}
-      </Button>
     </div>
   );
 }
