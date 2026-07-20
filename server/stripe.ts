@@ -110,11 +110,10 @@ export async function getPaymentIntentStatus(paymentIntentId: string): Promise<S
  * completing it the first time (closed the modal, connection dropped,
  * etc.). If the intent predates pinning payment_method_types explicitly
  * (i.e. it was created under automatic_payment_methods and is missing
- * PayNow), this upgrades it in place where Stripe allows that, and falls
- * back to canceling it and creating a fresh PaymentIntent — with the same
- * fee amount/customer/metadata — when it doesn't. The caller must persist
- * the returned paymentIntentId if `recreated` is true, since it will differ
- * from the one passed in.
+ * PayNow), this cancels it and creates a fresh PaymentIntent with the same
+ * fee amount/customer/metadata and PayNow pinned from the start. The caller
+ * must persist the returned paymentIntentId if `recreated` is true, since it
+ * will differ from the one passed in.
  */
 export async function retrieveOrUpgradeClientSecret(params: {
   paymentIntentId: string;
@@ -123,7 +122,7 @@ export async function retrieveOrUpgradeClientSecret(params: {
   bidId: number;
   feeAmountSgd: number;
 }): Promise<{ paymentIntentId: string; clientSecret: string; recreated: boolean }> {
-  let intent = await requireStripe().paymentIntents.retrieve(params.paymentIntentId);
+  const intent = await requireStripe().paymentIntents.retrieve(params.paymentIntentId);
   if (intent.status === "succeeded") throw new Error("This fee has already been paid");
   if (intent.status === "canceled") throw new Error("This payment was canceled — accept the bid again to retry");
   if (!intent.client_secret) throw new Error("This payment can no longer be retried — accept the bid again");
@@ -132,22 +131,14 @@ export async function retrieveOrUpgradeClientSecret(params: {
     return { paymentIntentId: intent.id, clientSecret: intent.client_secret, recreated: false };
   }
 
-  // Try a lightweight in-place upgrade first.
-  try {
-    intent = await requireStripe().paymentIntents.update(params.paymentIntentId, {
-      payment_method_types: ["card", "paynow"],
-    });
-    if (intent.payment_method_types?.includes("paynow")) {
-      return { paymentIntentId: intent.id, clientSecret: intent.client_secret as string, recreated: false };
-    }
-  } catch {
-    // Stripe doesn't allow switching away from automatic_payment_methods on
-    // some existing PaymentIntents — fall through to recreate below.
-  }
-
-  // In-place upgrade wasn't possible: cancel the stale intent (best-effort —
-  // an orphaned, never-canceled intent is harmless, it just never gets paid)
-  // and create a fresh one with PayNow pinned from the start.
+  // Don't bother trying to update payment_method_types in place: PaymentIntents
+  // created under automatic_payment_methods can silently accept that update
+  // call without erroring, yet Elements still renders based on the intent's
+  // automatic_payment_methods resolution rather than the static list — so an
+  // in-place "success" here is not trustworthy. Cancel the stale intent
+  // (best-effort — an orphaned, never-canceled intent is harmless, it just
+  // never gets paid) and create a fresh one with PayNow pinned from creation,
+  // which is the only path that reliably shows both methods.
   try {
     await requireStripe().paymentIntents.cancel(params.paymentIntentId);
   } catch {
