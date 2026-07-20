@@ -31,6 +31,7 @@ import {
   forgotPasswordResetSchema,
   contactMessageSchema,
   createAdminSchema,
+  adminUpdateUserSchema,
 } from "@shared/schema";
 import type { User } from "@shared/schema";
 import { stripeEnabled, constructWebhookEvent } from "./stripe";
@@ -819,6 +820,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json({ temporaryPassword });
     } catch (err: any) {
       res.status(400).json({ message: err.message || "Could not reset password" });
+    }
+  });
+
+  // Admin moderation: correct a user's name/email/phone. Doesn't touch
+  // password or account status — those go through their own dedicated
+  // endpoints (reset-password, suspend/ban, etc).
+  app.patch("/api/admin/users/:id", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const data = adminUpdateUserSchema.parse(req.body);
+      const updated = await storage.adminUpdateUser(Number(req.params.id), data);
+      if (!updated) return res.status(404).json({ message: "User not found" });
+      res.json(toPublicUser(updated));
+    } catch (err: any) {
+      res.status(400).json({ message: friendlyError(err, "Could not update user") });
     }
   });
 

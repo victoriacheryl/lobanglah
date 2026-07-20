@@ -97,8 +97,11 @@ paths:
       summary: Start registration (sends WhatsApp OTP)
       description: >
         Step 1 of 3. Collects account details and sends a 6-digit code to the
-        phone number over WhatsApp. No account is created yet.
-        Rate limited: 8 requests / 15 min per IP.
+        phone number over WhatsApp. No account is created yet. Rejects if
+        either the email or the (normalized) mobile number already belongs to
+        an existing account — re-checked again at each later step in case
+        either is taken by someone else's sign-up completing in the
+        meantime. Rate limited: 8 requests / 15 min per IP.
       security: []
       requestBody:
         required: true
@@ -112,7 +115,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PendingOtpResult" }
         "400":
-          description: Invalid registration details
+          description: Invalid registration details, or the email/mobile number is already registered
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1647,6 +1650,50 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
 
   /api/admin/users/{id}:
+    patch:
+      tags: [Admin]
+      summary: Correct a user's name, email, and/or phone
+      description: >-
+        Doesn't touch password or account status — those go through their own dedicated
+        endpoints (reset-password, suspend/ban). Refuses to change the email to one
+        already used by a different account.
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400":
+          description: Invalid input, or email already in use by another account
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
     delete:
       tags: [Admin]
       summary: Permanently delete a user account and everything tied to it

@@ -19,6 +19,7 @@ import type {
   Notification,
   Announcement,
   CreateAdminInput,
+  AdminUpdateUserInput,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
@@ -220,6 +221,9 @@ export async function startRegistration(input: {
   const existingEmail = await storage.getUserByEmail(input.email);
   if (existingEmail) throw new Error("An account with this email already exists");
 
+  const existingPhone = await storage.getUserByPhone(normalizedPhone);
+  if (existingPhone) throw new Error("An account with this mobile number already exists");
+
   const code = generateOtpCode();
   const pendingToken = crypto.randomBytes(24).toString("hex");
   pendingRegistrations.set(pendingToken, {
@@ -317,11 +321,17 @@ export async function verifyRegistration(pendingToken: string, code: string, bas
     throw new Error("Incorrect code. Please check your WhatsApp and try again.");
   }
 
-  // Re-check email uniqueness in case it was taken while this OTP was pending.
+  // Re-check email and phone uniqueness in case either was taken by someone
+  // else's completed sign-up while this OTP was pending.
   const existingEmail = await storage.getUserByEmail(pending.email);
   if (existingEmail) {
     pendingRegistrations.delete(pendingToken);
     throw new Error("An account with this email already exists");
+  }
+  const existingPhone = await storage.getUserByPhone(pending.phone);
+  if (existingPhone) {
+    pendingRegistrations.delete(pendingToken);
+    throw new Error("An account with this mobile number already exists");
   }
 
   pending.phoneVerified = true;
@@ -356,13 +366,19 @@ export async function verifyRegistrationEmailLink(token: string): Promise<User> 
     throw new Error("This verification link has expired. Please sign up again.");
   }
 
-  // Re-check email uniqueness one more time in case it was taken while this
-  // link was pending.
+  // Re-check email and phone uniqueness one more time in case either was
+  // taken while this link was pending.
   const existingEmail = await storage.getUserByEmail(pending.email);
   if (existingEmail) {
     emailTokenToPendingToken.delete(token);
     pendingRegistrations.delete(pendingToken);
     throw new Error("An account with this email already exists");
+  }
+  const existingPhone = await storage.getUserByPhone(pending.phone);
+  if (existingPhone) {
+    emailTokenToPendingToken.delete(token);
+    pendingRegistrations.delete(pendingToken);
+    throw new Error("An account with this mobile number already exists");
   }
 
   const user = db
@@ -494,6 +510,7 @@ export interface IStorage {
   createUser(user: InsertUser): Promise<User>;
   getUser(id: number): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
+  getUserByPhone(phone: string): Promise<User | undefined>;
   verifyPassword(email: string, password: string): Promise<User | undefined>;
   changePassword(userId: number, currentPassword: string, newPassword: string): Promise<void>;
   getAllUsers(): Promise<User[]>;
@@ -512,6 +529,11 @@ export interface IStorage {
    *  generated one-time password (never chosen by the caller) returned
    *  exactly once — same pattern as the seed-admin bootstrap above. */
   createAdminUser(input: CreateAdminInput): Promise<{ user: User; temporaryPassword: string }>;
+  /** Admin-only: correct a user's name/email/phone. Doesn't touch password or
+   *  status. Refuses to change the email to one already in use by someone
+   *  else (the column has a DB-level unique constraint either way, but this
+   *  gives a clean error message instead of a raw constraint failure). */
+  adminUpdateUser(id: number, patch: AdminUpdateUserInput): Promise<User | undefined>;
 
   // listings
   createListing(userId: number, listing: InsertListing): Promise<Listing>;
@@ -629,6 +651,13 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(users).where(eq(users.email, email)).get();
   }
 
+  /** Phone is stored normalized to E.164 (+65XXXXXXXX, see normalizeSgPhone),
+   *  so callers should normalize before looking up — this does an exact
+   *  match, not a fuzzy one. */
+  async getUserByPhone(phone: string): Promise<User | undefined> {
+    return db.select().from(users).where(eq(users.phone, phone)).get();
+  }
+
   async verifyPassword(email: string, password: string): Promise<User | undefined> {
     const user = await this.getUserByEmail(email);
     if (!user) return undefined;
@@ -681,6 +710,24 @@ export class DatabaseStorage implements IStorage {
       .returning()
       .get();
     return { user, temporaryPassword };
+  }
+
+  async adminUpdateUser(id: number, patch: AdminUpdateUserInput): Promise<User | undefined> {
+    const existing = await this.getUser(id);
+    if (!existing) return undefined;
+    if (patch.email && patch.email !== existing.email) {
+      const emailOwner = await this.getUserByEmail(patch.email);
+      if (emailOwner && emailOwner.id !== id) {
+        throw new Error("A user with this email already exists");
+      }
+    }
+    if (patch.phone && patch.phone !== existing.phone) {
+      const phoneOwner = await this.getUserByPhone(patch.phone);
+      if (phoneOwner && phoneOwner.id !== id) {
+        throw new Error("A user with this mobile number already exists");
+      }
+    }
+    return db.update(users).set(patch).where(eq(users.id, id)).returning().get();
   }
 
   async getAllUsers(): Promise<User[]> {

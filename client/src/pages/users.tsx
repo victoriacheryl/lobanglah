@@ -22,7 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDateTime, formatUserNumber } from "@/lib/format";
-import { Search, Clock, Ban, Trash2, RotateCcw, Users as UsersIcon, KeyRound, UserPlus, Copy, Check } from "lucide-react";
+import { Search, Clock, Ban, Trash2, RotateCcw, Users as UsersIcon, KeyRound, UserPlus, Copy, Check, Pencil } from "lucide-react";
 
 // Matches toPublicUser() on the server: the full User row minus password.
 type AdminUser = {
@@ -53,6 +53,7 @@ export default function Users() {
   const [banning, setBanning] = useState<AdminUser | null>(null);
   const [deleting, setDeleting] = useState<AdminUser | null>(null);
   const [resetting, setResetting] = useState<AdminUser | null>(null);
+  const [editing, setEditing] = useState<AdminUser | null>(null);
   const [creatingAdmin, setCreatingAdmin] = useState(false);
   // Holds a just-generated one-time password (from either a reset or a new
   // admin account) so it can be shown to the caller exactly once — it's never
@@ -94,6 +95,17 @@ export default function Users() {
       setDeleting(null);
     },
     onError: (err: any) => toast({ title: "Could not delete", description: err.message, variant: "destructive" }),
+  });
+
+  const editUserMutation = useMutation({
+    mutationFn: async (data: { name: string; email: string; phone: string }) =>
+      apiRequest("PATCH", `/api/admin/users/${editing!.id}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] });
+      toast({ title: "User updated" });
+      setEditing(null);
+    },
+    onError: (err: any) => toast({ title: "Could not update user", description: err.message, variant: "destructive" }),
   });
 
   const resetPasswordMutation = useMutation({
@@ -143,8 +155,8 @@ export default function Users() {
             <UsersIcon className="h-5 w-5 text-accent" /> User List
           </h1>
           <p className="text-sm text-muted-foreground">
-            Search, suspend, ban, or delete accounts. Reset a password if someone's locked out — passwords are hashed
-            and can never be viewed, only reset. Suspended and banned users lose access to everything until
+            Search, edit, suspend, ban, or delete accounts. Reset a password if someone's locked out — passwords are
+            hashed and can never be viewed, only reset. Suspended and banned users lose access to everything until
             reactivated.
           </p>
         </div>
@@ -193,6 +205,7 @@ export default function Users() {
               onReactivate={() => reactivateMutation.mutate(u.id)}
               onDelete={() => setDeleting(u)}
               onResetPassword={() => setResetting(u)}
+              onEdit={() => setEditing(u)}
               reactivating={reactivateMutation.isPending}
             />
           ))}
@@ -256,6 +269,13 @@ export default function Users() {
         </AlertDialogContent>
       </AlertDialog>
 
+      <EditUserDialog
+        user={editing}
+        onOpenChange={(open) => !open && setEditing(null)}
+        onSave={(data) => editUserMutation.mutate(data)}
+        saving={editUserMutation.isPending}
+      />
+
       <CreateAdminDialog
         open={creatingAdmin}
         onOpenChange={setCreatingAdmin}
@@ -265,6 +285,70 @@ export default function Users() {
 
       <OneTimeSecretDialog secret={oneTimeSecret} onOpenChange={(open) => !open && setOneTimeSecret(null)} />
     </div>
+  );
+}
+
+function EditUserDialog({
+  user,
+  onOpenChange,
+  onSave,
+  saving,
+}: {
+  user: AdminUser | null;
+  onOpenChange: (open: boolean) => void;
+  onSave: (data: { name: string; email: string; phone: string }) => void;
+  saving: boolean;
+}) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+
+  useEffect(() => {
+    if (!user) return;
+    setName(user.name);
+    setEmail(user.email);
+    setPhone(user.phone);
+  }, [user?.id]);
+
+  return (
+    <Dialog open={!!user} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit user details</DialogTitle>
+        </DialogHeader>
+        {user && (
+          <div className="space-y-4">
+            <p className="text-xs text-muted-foreground">
+              userID#{formatUserNumber(user.id)} — this doesn't touch their password or account status.
+            </p>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">Name</label>
+              <Input value={name} onChange={(e) => setName(e.target.value)} data-testid="input-edit-user-name" />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">Email</label>
+              <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} data-testid="input-edit-user-email" />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">Phone</label>
+              <Input value={phone} onChange={(e) => setPhone(e.target.value)} data-testid="input-edit-user-phone" />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button
+                disabled={saving || !name.trim() || !email.trim() || !phone.trim()}
+                onClick={() => onSave({ name: name.trim(), email: email.trim(), phone: phone.trim() })}
+                data-testid="button-save-user"
+              >
+                {saving ? "Saving..." : "Save changes"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -418,6 +502,7 @@ function UserRow({
   onReactivate,
   onDelete,
   onResetPassword,
+  onEdit,
   reactivating,
 }: {
   u: AdminUser;
@@ -427,6 +512,7 @@ function UserRow({
   onReactivate: () => void;
   onDelete: () => void;
   onResetPassword: () => void;
+  onEdit: () => void;
   reactivating: boolean;
 }) {
   const restricted = u.status !== "active";
@@ -461,6 +547,15 @@ function UserRow({
             <span className="text-xs text-muted-foreground">You</span>
           ) : (
             <>
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                onClick={onEdit}
+                data-testid={`button-edit-user-${u.id}`}
+              >
+                <Pencil className="h-3.5 w-3.5" /> Edit
+              </Button>
               <Button
                 size="sm"
                 variant="outline"

@@ -45,6 +45,18 @@ export const createAdminSchema = z.object({
 
 export type CreateAdminInput = z.infer<typeof createAdminSchema>;
 
+// Admin-only: correct a user's name/email/phone (e.g. a typo'd email that
+// locks them out, or a changed number) — a moderation action, not something
+// the user does themselves (that's a self-service profile feature, which
+// doesn't exist yet). All fields optional so a partial edit is fine.
+export const adminUpdateUserSchema = z.object({
+  name: z.string().min(1, "Name is required").optional(),
+  email: z.string().email("Enter a valid email").optional(),
+  phone: z.string().min(8, "Enter a valid contact number").optional(),
+});
+
+export type AdminUpdateUserInput = z.infer<typeof adminUpdateUserSchema>;
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type PublicUser = Omit<User, "password">;
