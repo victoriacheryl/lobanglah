@@ -392,6 +392,34 @@ export default function ListingDetail() {
             <p className="text-sm text-muted-foreground">You've already placed a bid on this listing.</p>
           )}
 
+          {/* Lets someone ask the poster a question before committing to a bid
+              — the same conversation continues seamlessly in their own bid's
+              embedded thread below once they do bid, since both read/write
+              the exact same listingId+poster conversation. Hidden once they've
+              bid so it doesn't duplicate that bid's own thread. */}
+          {!isOwner && !isAdmin && !hasBid && (
+            <Card>
+              <CardContent className="p-4 space-y-3">
+                <div>
+                  <h3 className="font-medium text-sm">Message the poster</h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Ask a question before you bid — contact details stay hidden until a bid is accepted and the fee
+                    is paid.
+                  </p>
+                </div>
+                <BidThread
+                  listingId={listingId}
+                  isAdmin={false}
+                  threadBidderId={user.id}
+                  posterId={listing.userId}
+                  otherUserId={listing.userId}
+                  otherName={listing.ownerName}
+                  currentUserId={user.id}
+                />
+              </CardContent>
+            </Card>
+          )}
+
           {isAdmin && !isOwner && participants && participants.length > 0 && (
             <AdminPrivateMessageCard listingId={listingId} participants={participants} currentUserId={user?.id} />
           )}
