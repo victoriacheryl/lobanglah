@@ -33,6 +33,18 @@ export const insertUserSchema = createInsertSchema(users)
     phone: z.string().min(8),
   });
 
+// Admin-only: create another admin account directly. No password field here —
+// the server always generates a random one-time password (never one typed by
+// or supplied to the caller) and returns it exactly once, same pattern as the
+// original seed-admin bootstrap in server/storage.ts.
+export const createAdminSchema = z.object({
+  name: z.string().min(1, "Name is required"),
+  email: z.string().email("Enter a valid email"),
+  phone: z.string().min(8, "Enter a valid contact number"),
+});
+
+export type CreateAdminInput = z.infer<typeof createAdminSchema>;
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type PublicUser = Omit<User, "password">;
@@ -88,6 +100,16 @@ export const changePasswordSchema = z
 
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 
+// ---------- Contact Us ----------
+export const contactMessageSchema = z.object({
+  name: z.string().min(1, "Name is required"),
+  email: z.string().email("Enter a valid email"),
+  phone: z.string().min(8, "Enter a valid contact number"),
+  message: z.string().min(10, "Tell us a bit more (at least 10 characters)").max(2000),
+});
+
+export type ContactMessageInput = z.infer<typeof contactMessageSchema>;
+
 // ---------- Forgot password (two-step: email -> WhatsApp OTP -> reset) ----------
 // Mirrors the registration OTP flow: step 1 looks up the account by email and
 // sends a 6-digit code to the phone number already on file; step 2 checks the
@@ -117,6 +139,10 @@ export type ForgotPasswordResetInput = z.infer<typeof forgotPasswordResetSchema>
 // listing location dropdown so posters can say roughly where the job or
 // item is, without exposing an exact address.
 export const SG_TOWNS = [
+  // "No preference" option — lets a poster skip picking a specific town when
+  // location genuinely doesn't matter for the job/item. Listed first so it's
+  // easy to find and doubles as the form's default selection.
+  "Islandwide",
   "Ang Mo Kio",
   "Bedok",
   "Bishan",
@@ -206,6 +232,16 @@ export const insertBidSchema = createInsertSchema(bids)
 export type InsertBid = z.infer<typeof insertBidSchema>;
 export type Bid = typeof bids.$inferSelect;
 
+// Admin moderation: correcting a bid's amount/message on a bidder's behalf
+// (e.g. a typo reported over the phone). Status changes still only happen
+// through accept/reject, not this.
+export const adminUpdateBidSchema = z.object({
+  amount: z.number().positive().optional(),
+  message: z.string().max(1000).optional(),
+});
+
+export type AdminUpdateBidInput = z.infer<typeof adminUpdateBidSchema>;
+
 // ---------- Messages ----------
 export const messages = sqliteTable("messages", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -275,6 +311,7 @@ export const notifications = sqliteTable("notifications", {
       "new_bid",
       "bid_accepted",
       "bid_rejected",
+      "bid_removed",
       "new_message",
       "fee_paid",
       "listing_approved",
@@ -285,6 +322,11 @@ export const notifications = sqliteTable("notifications", {
   title: text("title").notNull(),
   body: text("body").notNull(),
   relatedListingId: integer("related_listing_id"),
+  // For "new_message" notifications: the id of the other party in that
+  // conversation (from the recipient's point of view) — lets the client jump
+  // straight to that thread and start typing a reply, instead of dropping the
+  // user on the listing's Bids tab and making them hunt for Messages.
+  relatedUserId: integer("related_user_id"),
   read: integer("read", { mode: "boolean" }).notNull().default(false),
   createdAt: integer("created_at").notNull(),
 });

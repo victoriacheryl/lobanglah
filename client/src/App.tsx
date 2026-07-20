@@ -19,6 +19,7 @@ import ListingDetail from "@/pages/listing-detail";
 import Checkout from "@/pages/checkout";
 import MyListings from "@/pages/my-listings";
 import Wallet from "@/pages/wallet";
+import Contact from "@/pages/contact";
 import Profile from "@/pages/profile";
 import Admin from "@/pages/admin";
 import Users from "@/pages/users";
@@ -36,6 +37,7 @@ function AppRouter() {
       <Route path="/checkout/:feeChargeId" component={Checkout} />
       <Route path="/my-listings" component={MyListings} />
       <Route path="/wallet" component={Wallet} />
+      <Route path="/contact" component={Contact} />
       <Route path="/profile" component={Profile} />
       <Route path="/admin" component={Admin} />
       <Route path="/admin/users" component={Users} />

@@ -9,7 +9,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { ShieldCheck, Wallet, LogOut, Users } from "lucide-react";
+import { ShieldCheck, Wallet, LogOut, Users, Mail } from "lucide-react";
 
 function ToolbarLink({
   href,
@@ -85,6 +85,11 @@ export function BottomToolbar() {
             <DropdownMenuItem asChild>
               <Link href="/wallet" className="flex items-center gap-2 w-full">
                 <Wallet className="h-4 w-4" /> Wallet
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href="/contact" className="flex items-center gap-2 w-full">
+                <Mail className="h-4 w-4" /> Contact Us
               </Link>
             </DropdownMenuItem>
             {user.isAdmin && (

@@ -23,15 +23,19 @@ import {
   verifyEmailLinkSchema,
   insertListingSchema,
   insertBidSchema,
+  adminUpdateBidSchema,
   payFeeChargeSchema,
   createAnnouncementSchema,
   changePasswordSchema,
   forgotPasswordStartSchema,
   forgotPasswordResetSchema,
+  contactMessageSchema,
+  createAdminSchema,
 } from "@shared/schema";
 import type { User } from "@shared/schema";
 import { stripeEnabled, constructWebhookEvent } from "./stripe";
 import type Stripe from "stripe";
+import { sendContactMessage } from "./email";
 
 declare global {
   namespace Express {
@@ -136,6 +140,16 @@ const otpLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: "Too many requests. Please wait a few minutes and try again." },
+});
+
+// Contact Us sends a real outbound email per submission — cap it so the form
+// can't be used to spam the support inbox.
+const contactLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many enquiries sent. Please wait a few minutes and try again." },
 });
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
@@ -388,6 +402,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                 bidderId: b.bidderId,
                 bidderName: (await storage.getUser(b.bidderId))?.name ?? "Unknown",
                 amount: b.amount,
+                message: b.message,
                 status: b.status,
               }))
             )
@@ -521,6 +536,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json(bid);
     } catch (err: any) {
       res.status(400).json({ message: err.message || "Could not reject bid" });
+    }
+  });
+
+  // Admin moderation: correct a bid's amount/message on the bidder's behalf.
+  // Doesn't touch status — accept/reject remain the only way a bid's
+  // lifecycle advances.
+  app.patch("/api/admin/bids/:id", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const patch = adminUpdateBidSchema.parse(req.body);
+      const updated = await storage.adminUpdateBid(Number(req.params.id), patch);
+      if (!updated) return res.status(404).json({ message: "Bid not found" });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(400).json({ message: friendlyError(err, "Could not update bid") });
+    }
+  });
+
+  // Admin moderation: remove a single bid (spam, a mistaken bid, or one the
+  // bidder asked to withdraw) without touching the rest of the listing.
+  app.delete("/api/admin/bids/:id", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      await storage.adminDeleteBid(Number(req.params.id));
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ message: err.message || "Could not delete bid" });
     }
   });
 
@@ -751,6 +791,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(rows.map(toPublicUser));
   });
 
+  // Create a second (or third, etc.) admin account directly. There's no
+  // password field in the request — the server always generates a random
+  // one-time password and returns it exactly once, same pattern as the
+  // seed-admin bootstrap in storage.ts, so nobody (including this endpoint's
+  // caller) ever gets to pick a guessable admin password.
+  app.post("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const data = createAdminSchema.parse(req.body);
+      const { user, temporaryPassword } = await storage.createAdminUser(data);
+      res.status(201).json({ user: toPublicUser(user), temporaryPassword });
+    } catch (err: any) {
+      res.status(400).json({ message: friendlyError(err, "Could not create admin account") });
+    }
+  });
+
+  // Admin-only password reset — not a "view", since passwords are hashed
+  // one-way and there's nothing to display. Issues a fresh one-time password,
+  // signs the account out everywhere, and returns the plaintext exactly once.
+  app.post("/api/admin/users/:id/reset-password", requireAuth, requireAdmin, async (req, res) => {
+    const targetId = Number(req.params.id);
+    if (targetId === req.currentUser!.id) {
+      return res.status(400).json({ message: "Use Change Password on your own Profile page instead" });
+    }
+    try {
+      const temporaryPassword = await storage.resetUserPassword(targetId);
+      res.json({ temporaryPassword });
+    } catch (err: any) {
+      res.status(400).json({ message: err.message || "Could not reset password" });
+    }
+  });
+
   app.post("/api/admin/users/:id/suspend", requireAuth, requireAdmin, async (req, res) => {
     const targetId = Number(req.params.id);
     if (targetId === req.currentUser!.id) {
@@ -849,6 +920,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/notifications/read-all", requireAuth, async (req, res) => {
     await storage.markAllNotificationsRead(req.currentUser!.id);
     res.json({ ok: true });
+  });
+
+  // ---------- Contact Us ----------
+  app.post("/api/contact", requireAuth, contactLimiter, async (req, res) => {
+    try {
+      const data = contactMessageSchema.parse(req.body);
+      await sendContactMessage(data);
+      res.json({ ok: true });
+    } catch (err: any) {
+      if (err?.issues?.length) {
+        return res.status(400).json({ message: friendlyError(err, "Please check your details and try again.") });
+      }
+      res.status(502).json({ message: err.message || "Could not send your enquiry. Please try again." });
+    }
   });
 
   return httpServer;

@@ -10,7 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { ShieldCheck, Wallet, PlusCircle, LayoutList, Menu, Sun, Moon, UserCog, Users } from "lucide-react";
+import { ShieldCheck, Wallet, PlusCircle, LayoutList, Menu, Sun, Moon, UserCog, Users, Mail } from "lucide-react";
 import { useState } from "react";
 import { useTheme } from "@/lib/theme";
 import { NotificationBell } from "@/components/notification-bell";
@@ -59,6 +59,7 @@ export function Header() {
           {user && <NavLink href="/post">Post a Lobang</NavLink>}
           {user && <NavLink href="/my-listings">My Lobangs</NavLink>}
           {user && <NavLink href="/wallet">Wallet</NavLink>}
+          {user && <NavLink href="/contact">Contact Us</NavLink>}
           {user?.isAdmin && <NavLink href="/admin">Admin</NavLink>}
           {user?.isAdmin && <NavLink href="/admin/users">User List</NavLink>}
         </nav>
@@ -89,6 +90,9 @@ export function Header() {
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
                   <Link href="/wallet" className="flex items-center gap-2 w-full"><Wallet className="h-4 w-4" /> Wallet</Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/contact" className="flex items-center gap-2 w-full"><Mail className="h-4 w-4" /> Contact Us</Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
                   <Link href="/profile" className="flex items-center gap-2 w-full" data-testid="link-nav-profile"><UserCog className="h-4 w-4" /> Profile</Link>
@@ -152,6 +156,8 @@ export function Header() {
       {mobileOpen && (
         <div className="md:hidden border-t border-border px-4 py-3 flex flex-col gap-1">
           {user && <NavLink href="/profile" onNavigate={() => setMobileOpen(false)}>Profile</NavLink>}
+          {user && <NavLink href="/wallet" onNavigate={() => setMobileOpen(false)}>Wallet</NavLink>}
+          {user && <NavLink href="/contact" onNavigate={() => setMobileOpen(false)}>Contact Us</NavLink>}
           {user?.isAdmin && <NavLink href="/admin" onNavigate={() => setMobileOpen(false)}>Admin</NavLink>}
           {user?.isAdmin && <NavLink href="/admin/users" onNavigate={() => setMobileOpen(false)}>User List</NavLink>}
           <div className="h-px bg-border my-2" />

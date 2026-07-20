@@ -18,6 +18,7 @@ import type {
   FeeCharge,
   Notification,
   Announcement,
+  CreateAdminInput,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
@@ -501,6 +502,16 @@ export interface IStorage {
   banUser(id: number, reason?: string): Promise<User>;
   reactivateUser(id: number): Promise<User>;
   deleteUser(id: number): Promise<void>;
+  /** Admin-only: there is no "current password" to show — passwords are
+   *  salted/hashed one-way and never stored in reversible form — so this is a
+   *  reset, not a view. Generates a random one-time password, stores its
+   *  hash, signs the user out everywhere, and returns the plaintext password
+   *  exactly once so the admin can relay it. */
+  resetUserPassword(id: number): Promise<string>;
+  /** Admin-only: create another admin account directly, with a server-
+   *  generated one-time password (never chosen by the caller) returned
+   *  exactly once — same pattern as the seed-admin bootstrap above. */
+  createAdminUser(input: CreateAdminInput): Promise<{ user: User; temporaryPassword: string }>;
 
   // listings
   createListing(userId: number, listing: InsertListing): Promise<Listing>;
@@ -527,6 +538,8 @@ export interface IStorage {
   getBid(id: number): Promise<Bid | undefined>;
   acceptBid(bidId: number, posterId: number): Promise<{ listing: Listing; feeCharge: FeeCharge; clientSecret?: string }>;
   rejectBid(bidId: number, posterId: number): Promise<Bid>;
+  adminUpdateBid(id: number, patch: { amount?: number; message?: string }): Promise<Bid | undefined>;
+  adminDeleteBid(id: number): Promise<void>;
 
   // stripe fee-charge finalization (real-payments flow)
   finalizeFeeCharge(paymentIntentId: string): Promise<void>;
@@ -552,7 +565,7 @@ export interface IStorage {
   getBidContact(bidId: number, requestingUserId: number): Promise<{ posterName: string; posterPhone: string; providerName: string; providerPhone: string } | undefined>;
 
   // notifications
-  createNotification(userId: number, type: Notification["type"], title: string, body: string, relatedListingId?: number): Promise<Notification>;
+  createNotification(userId: number, type: Notification["type"], title: string, body: string, relatedListingId?: number, relatedUserId?: number): Promise<Notification>;
   getNotificationsForUser(userId: number): Promise<Notification[]>;
   markNotificationRead(id: number, userId: number): Promise<void>;
   markAllNotificationsRead(userId: number): Promise<void>;
@@ -636,6 +649,38 @@ export class DatabaseStorage implements IStorage {
       throw new Error("Current password is incorrect");
     }
     db.update(users).set({ password: hashPassword(newPassword) }).where(eq(users.id, userId)).run();
+  }
+
+  /** Admin-only password reset. There's no "current password" to retrieve —
+   *  passwords are salted PBKDF2 hashes, one-way by design — so this issues a
+   *  fresh random password instead, signs the account out everywhere (same as
+   *  a forgot-password reset), and hands the plaintext back exactly once. */
+  async resetUserPassword(id: number): Promise<string> {
+    const user = await this.getUser(id);
+    if (!user) throw new Error("User not found");
+    const temporaryPassword = crypto.randomBytes(9).toString("base64url");
+    db.update(users).set({ password: hashPassword(temporaryPassword) }).where(eq(users.id, id)).run();
+    invalidateAllSessions(id);
+    return temporaryPassword;
+  }
+
+  async createAdminUser(input: CreateAdminInput): Promise<{ user: User; temporaryPassword: string }> {
+    const existing = await this.getUserByEmail(input.email);
+    if (existing) throw new Error("A user with this email already exists");
+    const temporaryPassword = crypto.randomBytes(9).toString("base64url");
+    const user = db
+      .insert(users)
+      .values({
+        name: input.name,
+        email: input.email,
+        phone: input.phone,
+        password: hashPassword(temporaryPassword),
+        isAdmin: true,
+        createdAt: Date.now(),
+      })
+      .returning()
+      .get();
+    return { user, temporaryPassword };
   }
 
   async getAllUsers(): Promise<User[]> {
@@ -992,6 +1037,66 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
+  /** Admin moderation: correct a bid's amount and/or message on the bidder's
+   *  behalf (e.g. fixing a typo reported over the phone). Deliberately doesn't
+   *  touch status — accept/reject remain the only way a bid's lifecycle
+   *  advances. Refuses once the bid's fee has been paid, since the accepted
+   *  amount is now a real financial record. */
+  async adminUpdateBid(id: number, patch: { amount?: number; message?: string }): Promise<Bid | undefined> {
+    const bid = await this.getBid(id);
+    if (!bid) return undefined;
+    if (patch.amount !== undefined) {
+      const charges = db.select().from(feeCharges).where(eq(feeCharges.bidId, id)).all();
+      if (charges.some((f) => f.status === "paid")) {
+        throw new Error("This bid's platform fee has already been paid — its amount can no longer be changed");
+      }
+    }
+    return db.update(bids).set(patch).where(eq(bids.id, id)).returning().get();
+  }
+
+  /** Admin moderation: remove a single bid (e.g. spam, a mistaken bid, or one
+   *  a bidder asked to withdraw) without touching the rest of the listing.
+   *  Cleans up the bidder's private thread on this listing and any unpaid fee
+   *  charge tied to the bid; refuses if the fee has already been paid, since
+   *  that's a real settled transaction. */
+  async adminDeleteBid(id: number): Promise<void> {
+    const bid = await this.getBid(id);
+    if (!bid) throw new Error("Bid not found");
+    const listing = await this.getListing(bid.listingId);
+
+    const charges = db.select().from(feeCharges).where(eq(feeCharges.bidId, id)).all();
+    if (charges.some((f) => f.status === "paid")) {
+      throw new Error("This bid's platform fee has already been paid and can't be removed");
+    }
+    for (const f of charges) {
+      db.delete(feeCharges).where(eq(feeCharges.id, f.id)).run();
+    }
+
+    db.delete(messages)
+      .where(
+        and(
+          eq(messages.listingId, bid.listingId),
+          or(
+            eq(messages.threadBidderId, bid.bidderId),
+            eq(messages.senderId, bid.bidderId),
+            eq(messages.recipientId, bid.bidderId)
+          )
+        )
+      )
+      .run();
+    db.delete(bids).where(eq(bids.id, id)).run();
+
+    if (listing) {
+      await this.createNotification(
+        bid.bidderId,
+        "bid_removed",
+        "Your bid was removed",
+        `An admin removed your bid on "${listing.title}". Reach out via Contact Us if you have questions.`,
+        listing.id
+      );
+    }
+  }
+
   /** Poster settles the platform fee via PayNow or Card right after accepting a bid.
    *  Simulated payment confirmation (no real gateway wired up yet) — marks the fee
    *  "paid" immediately so contact details can be released to both parties. */
@@ -1187,7 +1292,8 @@ export class DatabaseStorage implements IStorage {
       "new_message",
       `New message from ${sender?.name ?? "someone"}`,
       listing ? `On "${listing.title}": ${preview}` : preview,
-      listingId
+      listingId,
+      senderId
     );
 
     return created;
@@ -1221,12 +1327,17 @@ export class DatabaseStorage implements IStorage {
     const notifyIds = new Set<number>([listing.userId, threadBidderId]);
     notifyIds.delete(senderId);
     for (const uid of Array.from(notifyIds)) {
+      // From each recipient's point of view, the "other party" in this thread
+      // is whichever of {poster, bidder} they aren't — that's who tapping the
+      // notification should open a reply box to, not the admin who relayed it.
+      const otherPartyId = uid === listing.userId ? threadBidderId : listing.userId;
       await this.createNotification(
         uid,
         "new_message",
         `New message from ${sender?.name ?? "someone"}`,
         `On "${listing.title}": ${preview}`,
-        listingId
+        listingId,
+        otherPartyId
       );
     }
 
@@ -1269,7 +1380,8 @@ export class DatabaseStorage implements IStorage {
     type: Notification["type"],
     title: string,
     body: string,
-    relatedListingId?: number
+    relatedListingId?: number,
+    relatedUserId?: number
   ): Promise<Notification> {
     return db
       .insert(notifications)
@@ -1279,6 +1391,7 @@ export class DatabaseStorage implements IStorage {
         title,
         body,
         relatedListingId: relatedListingId ?? null,
+        relatedUserId: relatedUserId ?? null,
         read: false,
         createdAt: Date.now(),
       })

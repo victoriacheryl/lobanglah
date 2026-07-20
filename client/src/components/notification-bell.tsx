@@ -15,6 +15,7 @@ const ICONS: Record<string, React.ElementType> = {
   new_bid: Gavel,
   bid_accepted: CheckCircle2,
   bid_rejected: XCircle,
+  bid_removed: XCircle,
   new_message: MessageCircle,
   fee_paid: HandCoins,
   listing_approved: CheckCircle2,
@@ -108,6 +109,13 @@ export function NotificationBell() {
                     if (!n.read) readOneMutation.mutate(n.id);
                     if (n.type === "new_posting_review") {
                       navigate("/admin");
+                    } else if (n.type === "new_message" && n.relatedListingId) {
+                      // Jump straight to the Messages tab (and the right
+                      // conversation, if we know who it's with) instead of
+                      // dropping the user on Bids and making them go find it.
+                      const params = new URLSearchParams({ tab: "messages" });
+                      if (n.relatedUserId) params.set("participant", String(n.relatedUserId));
+                      navigate(`/listings/${n.relatedListingId}?${params.toString()}`);
                     } else if (n.relatedListingId) {
                       navigate(`/listings/${n.relatedListingId}`);
                     }

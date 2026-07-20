@@ -57,3 +57,46 @@ export async function sendVerificationEmail(toEmail: string, verifyUrl: string):
     throw new Error(`Could not send verification email (Resend ${resp.status}): ${text || "unknown error"}`);
   }
 }
+
+/** Forwards a "Contact Us" enquiry to the LobangLah! support inbox, with the
+ *  sender set as reply-to so replying in a normal email client goes straight
+ *  back to them. Resolves silently (and logs) in simulated/dev mode. */
+export async function sendContactMessage(params: {
+  name: string;
+  email: string;
+  phone: string;
+  message: string;
+}): Promise<void> {
+  const supportInbox = "hello@lobanglah.sg";
+  if (!emailEnabled) {
+    console.log(
+      `[email:simulated] Would forward Contact Us message from ${params.name} <${params.email}> (${params.phone}) to ${supportInbox}: ${params.message}`
+    );
+    return;
+  }
+
+  const resp = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${resendApiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: emailFrom,
+      to: supportInbox,
+      reply_to: params.email,
+      subject: `Contact Us enquiry from ${params.name}`,
+      text: `From: ${params.name} <${params.email}>\nPhone: ${params.phone}\n\n${params.message}`,
+      html: `
+        <p><strong>From:</strong> ${params.name} &lt;${params.email}&gt;</p>
+        <p><strong>Phone:</strong> ${params.phone}</p>
+        <p style="white-space:pre-wrap;">${params.message}</p>
+      `,
+    }),
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`Could not send enquiry (Resend ${resp.status}): ${text || "unknown error"}`);
+  }
+}

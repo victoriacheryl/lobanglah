@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { Card, CardContent } from "@/components/ui/card";
@@ -21,8 +21,8 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDateTime } from "@/lib/format";
-import { Search, Clock, Ban, Trash2, RotateCcw, Users as UsersIcon } from "lucide-react";
+import { formatDateTime, formatUserNumber } from "@/lib/format";
+import { Search, Clock, Ban, Trash2, RotateCcw, Users as UsersIcon, KeyRound, UserPlus, Copy, Check } from "lucide-react";
 
 // Matches toPublicUser() on the server: the full User row minus password.
 type AdminUser = {
@@ -52,6 +52,12 @@ export default function Users() {
   const [suspending, setSuspending] = useState<AdminUser | null>(null);
   const [banning, setBanning] = useState<AdminUser | null>(null);
   const [deleting, setDeleting] = useState<AdminUser | null>(null);
+  const [resetting, setResetting] = useState<AdminUser | null>(null);
+  const [creatingAdmin, setCreatingAdmin] = useState(false);
+  // Holds a just-generated one-time password (from either a reset or a new
+  // admin account) so it can be shown to the caller exactly once — it's never
+  // retrievable again after this dialog closes.
+  const [oneTimeSecret, setOneTimeSecret] = useState<{ title: string; description: string; password: string } | null>(null);
 
   const { data, isLoading, isError, error, refetch } = useQuery<AdminUser[]>({
     queryKey: ["/api/admin/users"],
@@ -61,7 +67,14 @@ export default function Users() {
   const q = search.trim().toLowerCase();
   const filtered = (data ?? []).filter((u) => {
     if (!q) return true;
-    return u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q) || u.phone.toLowerCase().includes(q);
+    const userNumber = formatUserNumber(u.id);
+    const idMatch = `userid#${userNumber}` === q || userNumber === q.replace(/^#/, "");
+    return (
+      idMatch ||
+      u.name.toLowerCase().includes(q) ||
+      u.email.toLowerCase().includes(q) ||
+      u.phone.toLowerCase().includes(q)
+    );
   });
 
   const reactivateMutation = useMutation({
@@ -83,26 +96,67 @@ export default function Users() {
     onError: (err: any) => toast({ title: "Could not delete", description: err.message, variant: "destructive" }),
   });
 
+  const resetPasswordMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("POST", `/api/admin/users/${id}/reset-password`, {});
+      return res.json();
+    },
+    onSuccess: (data: { temporaryPassword: string }) => {
+      toast({ title: "Password reset", description: `${resetting?.name ?? "Their"} other sessions were signed out.` });
+      setOneTimeSecret({
+        title: "New password generated",
+        description: `Share this with ${resetting?.name ?? "the user"} (${resetting?.email ?? ""}) — it won't be shown again. They should change it after logging in.`,
+        password: data.temporaryPassword,
+      });
+      setResetting(null);
+    },
+    onError: (err: any) => toast({ title: "Could not reset password", description: err.message, variant: "destructive" }),
+  });
+
+  const createAdminMutation = useMutation({
+    mutationFn: async (data: { name: string; email: string; phone: string }) => {
+      const res = await apiRequest("POST", "/api/admin/users", data);
+      return res.json();
+    },
+    onSuccess: (data: { user: AdminUser; temporaryPassword: string }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] });
+      toast({ title: "Admin account created" });
+      setCreatingAdmin(false);
+      setOneTimeSecret({
+        title: "Admin account created",
+        description: `Share this with ${data.user.name} (${data.user.email}) — it won't be shown again. They should change it after logging in.`,
+        password: data.temporaryPassword,
+      });
+    },
+    onError: (err: any) => toast({ title: "Could not create admin account", description: err.message, variant: "destructive" }),
+  });
+
   if (!user?.isAdmin) {
     return <div className="mx-auto max-w-2xl px-4 py-16 text-center text-muted-foreground">Admin access required.</div>;
   }
 
   return (
     <div className="mx-auto max-w-3xl px-4 sm:px-6 py-8 space-y-6">
-      <div>
-        <h1 className="font-display text-xl font-semibold mb-1 flex items-center gap-2" data-testid="text-page-title">
-          <UsersIcon className="h-5 w-5 text-accent" /> User List
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Search, suspend, ban, or delete accounts. Suspended and banned users lose access to everything —
-          including viewing their own postings — until reactivated.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="font-display text-xl font-semibold mb-1 flex items-center gap-2" data-testid="text-page-title">
+            <UsersIcon className="h-5 w-5 text-accent" /> User List
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Search, suspend, ban, or delete accounts. Reset a password if someone's locked out — passwords are hashed
+            and can never be viewed, only reset. Suspended and banned users lose access to everything until
+            reactivated.
+          </p>
+        </div>
+        <Button size="sm" className="gap-1.5 shrink-0" onClick={() => setCreatingAdmin(true)} data-testid="button-create-admin">
+          <UserPlus className="h-3.5 w-3.5" /> New admin
+        </Button>
       </div>
 
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
-          placeholder="Search by name, email, or phone..."
+          placeholder="Search by name, email, phone, or userID#..."
           className="pl-9"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -138,6 +192,7 @@ export default function Users() {
               onBan={() => setBanning(u)}
               onReactivate={() => reactivateMutation.mutate(u.id)}
               onDelete={() => setDeleting(u)}
+              onResetPassword={() => setResetting(u)}
               reactivating={reactivateMutation.isPending}
             />
           ))}
@@ -173,7 +228,163 @@ export default function Users() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <AlertDialog open={!!resetting} onOpenChange={(open) => !open && setResetting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset this account's password?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {resetting && (
+                <>
+                  This generates a brand-new password for {resetting.name} ({resetting.email}) and signs them out of
+                  every device. There's no way to view their current password — it's hashed and stored one-way — so
+                  this is the only way to help them back in if they're locked out.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={resetPasswordMutation.isPending}
+              onClick={() => resetting && resetPasswordMutation.mutate(resetting.id)}
+              data-testid="button-confirm-reset-password"
+            >
+              Reset password
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <CreateAdminDialog
+        open={creatingAdmin}
+        onOpenChange={setCreatingAdmin}
+        onCreate={(data) => createAdminMutation.mutate(data)}
+        creating={createAdminMutation.isPending}
+      />
+
+      <OneTimeSecretDialog secret={oneTimeSecret} onOpenChange={(open) => !open && setOneTimeSecret(null)} />
     </div>
+  );
+}
+
+function CreateAdminDialog({
+  open,
+  onOpenChange,
+  onCreate,
+  creating,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCreate: (data: { name: string; email: string; phone: string }) => void;
+  creating: boolean;
+}) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setName("");
+      setEmail("");
+      setPhone("");
+    }
+  }, [open]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Create a new admin account</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <p className="text-xs text-muted-foreground">
+            A one-time password is generated automatically and shown once after creation — nobody, including you,
+            chooses it. Share it with them so they can log in and change it.
+          </p>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium">Name</label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} data-testid="input-new-admin-name" />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium">Email</label>
+            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} data-testid="input-new-admin-email" />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium">Contact number</label>
+            <Input value={phone} onChange={(e) => setPhone(e.target.value)} data-testid="input-new-admin-phone" />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={creating || !name.trim() || !email.trim() || !phone.trim()}
+              onClick={() => onCreate({ name: name.trim(), email: email.trim(), phone: phone.trim() })}
+              data-testid="button-confirm-create-admin"
+            >
+              {creating ? "Creating..." : "Create admin account"}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Shows a server-generated one-time secret (a reset or new-admin password)
+ *  exactly once — it isn't retrievable again once this dialog is dismissed,
+ *  since nothing ever stores it in reversible form. */
+function OneTimeSecretDialog({
+  secret,
+  onOpenChange,
+}: {
+  secret: { title: string; description: string; password: string } | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    setCopied(false);
+  }, [secret?.password]);
+
+  async function copy() {
+    if (!secret) return;
+    try {
+      await navigator.clipboard.writeText(secret.password);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard access can be blocked in some browser contexts — the
+      // password is still selectable/visible in the field either way.
+    }
+  }
+
+  return (
+    <Dialog open={!!secret} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{secret?.title}</DialogTitle>
+        </DialogHeader>
+        {secret && (
+          <div className="space-y-4">
+            <p className="text-xs text-muted-foreground">{secret.description}</p>
+            <div className="flex items-center gap-2">
+              <Input readOnly value={secret.password} className="font-mono" data-testid="text-one-time-password" />
+              <Button size="icon" variant="outline" onClick={copy} data-testid="button-copy-one-time-password">
+                {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              </Button>
+            </div>
+            <p className="text-xs text-destructive">This won't be shown again — copy it now.</p>
+            <div className="flex justify-end">
+              <Button onClick={() => onOpenChange(false)} data-testid="button-close-one-time-secret">
+                Done
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -206,6 +417,7 @@ function UserRow({
   onBan,
   onReactivate,
   onDelete,
+  onResetPassword,
   reactivating,
 }: {
   u: AdminUser;
@@ -214,6 +426,7 @@ function UserRow({
   onBan: () => void;
   onReactivate: () => void;
   onDelete: () => void;
+  onResetPassword: () => void;
   reactivating: boolean;
 }) {
   const restricted = u.status !== "active";
@@ -224,6 +437,9 @@ function UserRow({
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-medium text-sm truncate">{u.name}</span>
+            <Badge variant="outline" className="text-[10px] font-mono" data-testid={`badge-userid-${u.id}`}>
+              userID#{formatUserNumber(u.id)}
+            </Badge>
             {u.isAdmin && (
               <Badge variant="outline" className="text-xs" data-testid={`badge-admin-${u.id}`}>
                 Admin
@@ -240,50 +456,64 @@ function UserRow({
           </p>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
           {isSelf ? (
             <span className="text-xs text-muted-foreground">You</span>
-          ) : u.isAdmin ? (
-            <span className="text-xs text-muted-foreground">Admin account</span>
-          ) : restricted ? (
+          ) : (
             <>
               <Button
                 size="sm"
                 variant="outline"
                 className="gap-1.5"
-                onClick={onReactivate}
-                disabled={reactivating}
-                data-testid={`button-reactivate-${u.id}`}
+                onClick={onResetPassword}
+                title="Passwords are hashed and can't be viewed — this generates a new one"
+                data-testid={`button-reset-password-${u.id}`}
               >
-                <RotateCcw className="h-3.5 w-3.5" /> Reactivate
+                <KeyRound className="h-3.5 w-3.5" /> Reset password
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-1.5 text-destructive hover:text-destructive"
-                onClick={onDelete}
-                data-testid={`button-delete-user-${u.id}`}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button size="sm" variant="outline" className="gap-1.5" onClick={onSuspend} data-testid={`button-suspend-${u.id}`}>
-                <Clock className="h-3.5 w-3.5" /> Suspend
-              </Button>
-              <Button size="sm" variant="outline" className="gap-1.5" onClick={onBan} data-testid={`button-ban-${u.id}`}>
-                <Ban className="h-3.5 w-3.5" /> Ban
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-1.5 text-destructive hover:text-destructive"
-                onClick={onDelete}
-                data-testid={`button-delete-user-${u.id}`}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
+              {u.isAdmin ? (
+                <span className="text-xs text-muted-foreground">Admin account</span>
+              ) : restricted ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5"
+                    onClick={onReactivate}
+                    disabled={reactivating}
+                    data-testid={`button-reactivate-${u.id}`}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" /> Reactivate
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5 text-destructive hover:text-destructive"
+                    onClick={onDelete}
+                    data-testid={`button-delete-user-${u.id}`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button size="sm" variant="outline" className="gap-1.5" onClick={onSuspend} data-testid={`button-suspend-${u.id}`}>
+                    <Clock className="h-3.5 w-3.5" /> Suspend
+                  </Button>
+                  <Button size="sm" variant="outline" className="gap-1.5" onClick={onBan} data-testid={`button-ban-${u.id}`}>
+                    <Ban className="h-3.5 w-3.5" /> Ban
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5 text-destructive hover:text-destructive"
+                    onClick={onDelete}
+                    data-testid={`button-delete-user-${u.id}`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </>
+              )}
             </>
           )}
         </div>

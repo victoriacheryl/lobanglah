@@ -1,10 +1,12 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/status-badge";
 import { formatDate, formatListingNumber } from "@/lib/format";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -21,10 +23,11 @@ import {
 import { ListingForm } from "@/components/listing-form";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Pencil, Lock, Trash2, Ban } from "lucide-react";
+import { Pencil, Lock, Trash2, Ban, MessageSquare } from "lucide-react";
 import type { Listing, InsertListing } from "@shared/schema";
 
-type BidSummary = { id: number; bidderId: number; bidderName: string; amount: number; status: string };
+type BidSummary = { id: number; bidderId: number; bidderName: string; amount: number; message: string; status: string };
+type TargetBid = BidSummary & { listingId: number; listingTitle: string };
 type MyListing = Listing & { hasBids: boolean; ownerName?: string; bids?: BidSummary[] };
 type OfferingFee = { status: string; feeAmount: number; paidAt: number | null };
 type OfferingListing = Listing & {
@@ -40,6 +43,9 @@ export default function MyListings() {
   const [editing, setEditing] = useState<MyListing | null>(null);
   const [deleting, setDeleting] = useState<MyListing | null>(null);
   const [closing, setClosing] = useState<MyListing | null>(null);
+  const [editingBid, setEditingBid] = useState<TargetBid | null>(null);
+  const [deletingBid, setDeletingBid] = useState<TargetBid | null>(null);
+  const [messagingBid, setMessagingBid] = useState<TargetBid | null>(null);
   const isAdmin = !!user?.isAdmin;
 
   const { data: response, isLoading } = useQuery<MyListingsResponse>({
@@ -95,6 +101,40 @@ export default function MyListings() {
       setClosing(null);
     },
     onError: (err: any) => toast({ title: "Could not close listing", description: err.message, variant: "destructive" }),
+  });
+
+  const editBidMutation = useMutation({
+    mutationFn: async (data: { amount: number; message: string }) =>
+      apiRequest("PATCH", `/api/admin/bids/${editingBid!.id}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/listings/mine"] });
+      toast({ title: "Bid updated" });
+      setEditingBid(null);
+    },
+    onError: (err: any) => toast({ title: "Could not update bid", description: err.message, variant: "destructive" }),
+  });
+
+  const deleteBidMutation = useMutation({
+    mutationFn: async (id: number) => apiRequest("DELETE", `/api/admin/bids/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/listings/mine"] });
+      toast({ title: "Bid removed", description: "The bidder has been notified." });
+      setDeletingBid(null);
+    },
+    onError: (err: any) => toast({ title: "Could not remove bid", description: err.message, variant: "destructive" }),
+  });
+
+  const messageBidderMutation = useMutation({
+    mutationFn: async (content: string) =>
+      apiRequest("POST", `/api/listings/${messagingBid!.listingId}/messages`, {
+        content,
+        recipientId: messagingBid!.bidderId,
+      }),
+    onSuccess: () => {
+      toast({ title: "Message sent", description: `${messagingBid?.bidderName ?? "The bidder"} will see it in their messages.` });
+      setMessagingBid(null);
+    },
+    onError: (err: any) => toast({ title: "Could not send", description: err.message, variant: "destructive" }),
   });
 
   const renderCard = (l: MyListing) => (
@@ -173,11 +213,11 @@ export default function MyListings() {
                     <p className="text-xs font-medium text-muted-foreground mb-2">
                       Bids ({l.bids.length})
                     </p>
-                    <div className="space-y-1.5">
+                    <div className="space-y-2">
                       {l.bids.map((b) => (
                         <div
                           key={b.id}
-                          className="flex items-center justify-between gap-3 text-sm"
+                          className="flex items-center justify-between gap-3 text-sm flex-wrap"
                           data-testid={`row-bid-${b.id}`}
                         >
                           <span className="truncate flex items-center gap-1.5">
@@ -193,6 +233,36 @@ export default function MyListings() {
                               ${b.amount.toFixed(2)}
                             </span>
                             <StatusBadge status={b.status} context="bid" />
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0"
+                              title="Message bidder"
+                              onClick={() => setMessagingBid({ ...b, listingId: l.id, listingTitle: l.title })}
+                              data-testid={`button-message-bid-${b.id}`}
+                            >
+                              <MessageSquare className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0"
+                              title="Edit bid"
+                              onClick={() => setEditingBid({ ...b, listingId: l.id, listingTitle: l.title })}
+                              data-testid={`button-edit-bid-${b.id}`}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                              title="Delete bid"
+                              onClick={() => setDeletingBid({ ...b, listingId: l.id, listingTitle: l.title })}
+                              data-testid={`button-delete-bid-${b.id}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
                           </div>
                         </div>
                       ))}
@@ -392,6 +462,169 @@ export default function MyListings() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <EditBidDialog
+        bid={editingBid}
+        onOpenChange={(open) => !open && setEditingBid(null)}
+        onSave={(data) => editBidMutation.mutate(data)}
+        saving={editBidMutation.isPending}
+      />
+
+      <AlertDialog open={!!deletingBid} onOpenChange={(open) => !open && setDeletingBid(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove this bid?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deletingBid && (
+                <>
+                  This permanently removes {deletingBid.bidderName}'s bid of ${deletingBid.amount.toFixed(2)} on "
+                  {deletingBid.listingTitle}", along with their private message thread on this listing. They'll be
+                  notified. This can't be undone.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteBidMutation.isPending}
+              onClick={() => deletingBid && deleteBidMutation.mutate(deletingBid.id)}
+              data-testid="button-confirm-delete-bid"
+            >
+              Remove bid
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <MessageBidderDialog
+        bid={messagingBid}
+        onOpenChange={(open) => !open && setMessagingBid(null)}
+        onSend={(content) => messageBidderMutation.mutate(content)}
+        sending={messageBidderMutation.isPending}
+      />
     </div>
+  );
+}
+
+function EditBidDialog({
+  bid,
+  onOpenChange,
+  onSave,
+  saving,
+}: {
+  bid: TargetBid | null;
+  onOpenChange: (open: boolean) => void;
+  onSave: (data: { amount: number; message: string }) => void;
+  saving: boolean;
+}) {
+  const [amount, setAmount] = useState("");
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    if (!bid) return;
+    setAmount(String(bid.amount));
+    setMessage(bid.message ?? "");
+  }, [bid?.id]);
+
+  return (
+    <Dialog open={!!bid} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit bid</DialogTitle>
+        </DialogHeader>
+        {bid && (
+          <div className="space-y-4">
+            <p className="text-xs text-muted-foreground">
+              {bid.bidderName}'s bid on "{bid.listingTitle}"
+            </p>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">Amount (SGD)</label>
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                data-testid="input-edit-bid-amount"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">Message</label>
+              <Textarea
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                rows={3}
+                data-testid="input-edit-bid-message"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button
+                disabled={saving || !amount.trim() || Number(amount) <= 0}
+                onClick={() => onSave({ amount: Number(amount), message: message.trim() })}
+                data-testid="button-save-bid"
+              >
+                Save changes
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function MessageBidderDialog({
+  bid,
+  onOpenChange,
+  onSend,
+  sending,
+}: {
+  bid: TargetBid | null;
+  onOpenChange: (open: boolean) => void;
+  onSend: (content: string) => void;
+  sending: boolean;
+}) {
+  const [text, setText] = useState("");
+
+  useEffect(() => {
+    if (!bid) return;
+    setText("");
+  }, [bid?.id]);
+
+  return (
+    <Dialog open={!!bid} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Message bidder</DialogTitle>
+        </DialogHeader>
+        {bid && (
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              To {bid.bidderName} about "{bid.listingTitle}"
+            </p>
+            <Textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              rows={5}
+              placeholder="Type a message..."
+              data-testid="input-message-bidder"
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button disabled={!text.trim() || sending} onClick={() => onSend(text)} data-testid="button-send-message-bidder">
+                Send
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }

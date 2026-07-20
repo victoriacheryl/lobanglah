@@ -1,4 +1,4 @@
-import { useParams } from "wouter";
+import { useParams, useSearch } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -49,8 +49,16 @@ export default function ListingDetail() {
     refetchInterval: (query) => (query.state.data?.some((f) => f.status === "pending") ? 3000 : false),
   });
 
-  const [activeTab, setActiveTab] = useState<"bids" | "messages">("bids");
-  const [messageTarget, setMessageTarget] = useState<number | null>(null);
+  // Clicking a "new message" notification links here with ?tab=messages
+  // (and, when known, &participant=<userId>) so the reply box is already open
+  // on the right conversation instead of dropping the user on the Bids tab.
+  const search = useSearch();
+  const searchParams = new URLSearchParams(search);
+  const initialTab = searchParams.get("tab") === "messages" ? "messages" : "bids";
+  const initialParticipant = Number(searchParams.get("participant")) || null;
+
+  const [activeTab, setActiveTab] = useState<"bids" | "messages">(initialTab);
+  const [messageTarget, setMessageTarget] = useState<number | null>(initialParticipant);
 
   const [bidAmount, setBidAmount] = useState("");
   const [bidMessage, setBidMessage] = useState("");

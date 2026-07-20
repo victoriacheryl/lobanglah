@@ -28,6 +28,16 @@ export function formatListingNumber(id: number): string {
   return String(LISTING_NUMBER_BASE + id);
 }
 
+// User ID tags shown in the UI (e.g. "userID#21001") are the user's real
+// database id offset by this base — same purely-cosmetic pattern as listing
+// numbers above, not a separate id. User id 1 becomes 21001, id 2 becomes
+// 21002, etc.
+const USER_NUMBER_BASE = 21_000;
+
+export function formatUserNumber(id: number): string {
+  return String(USER_NUMBER_BASE + id);
+}
+
 export const CATEGORIES = [
   "Home Services",
   "Tutoring",

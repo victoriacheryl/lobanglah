@@ -9,7 +9,8 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
-import { KeyRound, User as UserIcon } from "lucide-react";
+import { KeyRound, User as UserIcon, Mail } from "lucide-react";
+import { formatUserNumber } from "@/lib/format";
 
 export default function Profile() {
   const { user, changePassword } = useAuth();
@@ -65,7 +66,12 @@ export default function Profile() {
               {initials}
             </div>
             <div>
-              <p className="font-medium" data-testid="text-profile-name">{user.name}</p>
+              <p className="font-medium flex items-center gap-1.5" data-testid="text-profile-name">
+                {user.name}
+                <span className="text-[10px] font-mono font-normal text-muted-foreground" data-testid="text-profile-userid">
+                  userID#{formatUserNumber(user.id)}
+                </span>
+              </p>
               <p className="text-muted-foreground text-xs" data-testid="text-profile-email">{user.email}</p>
             </div>
           </div>
@@ -73,6 +79,11 @@ export default function Profile() {
             <p className="text-muted-foreground text-xs mb-0.5">Mobile number</p>
             <p data-testid="text-profile-phone">{user.phone}</p>
           </div>
+          <p className="text-xs text-muted-foreground flex items-start gap-1.5 pt-2 border-t border-border mt-3">
+            <Mail className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            Your email and mobile number are verified and can't be changed here. Email{" "}
+            <a href="mailto:hello@lobanglah.sg" className="text-primary font-medium">hello@lobanglah.sg</a> for assistance.
+          </p>
         </CardContent>
       </Card>
 
