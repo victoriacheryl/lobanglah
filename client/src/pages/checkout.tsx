@@ -9,7 +9,7 @@ import { useTheme } from "@/lib/theme";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ShieldCheck, Loader2, CheckCircle2, XCircle, QrCode } from "lucide-react";
+import { ShieldCheck, Loader2, CheckCircle2, XCircle } from "lucide-react";
 import { formatSGD } from "@/lib/format";
 
 interface StripeIntentResult {
@@ -155,6 +155,52 @@ interface PayNowQrCode {
   hostedInstructionsUrl?: string;
 }
 
+/**
+ * The real PayNow wordmark (bold "PAYNOW" with the O replaced by a
+ * check-in-a-circle), same as what Stripe itself shows next to its PayNow
+ * QR code — see the "PayNow" tab/badge in Stripe's own Payment Element and
+ * on stripe.com/payment-method/paynow. Redrawn as inline SVG (brand mark,
+ * not a hot-linked asset) so it always renders regardless of Stripe.js's
+ * CDN, and so it can sit as the header of our own QR panel below.
+ */
+function PayNowLogo({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 172 32" className={className} role="img" aria-label="PayNow">
+      <text
+        x="0"
+        y="24"
+        fontFamily="Arial, Helvetica, sans-serif"
+        fontWeight="800"
+        fontSize="26"
+        fill="#9B1B7E"
+        letterSpacing="0.5"
+      >
+        PAYN
+      </text>
+      <circle cx="122" cy="16" r="14" fill="none" stroke="#9B1B7E" strokeWidth="3" />
+      <path
+        d="M115 16.5l4.5 4.5 9-9.5"
+        fill="none"
+        stroke="#9B1B7E"
+        strokeWidth="3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <text
+        x="139"
+        y="24"
+        fontFamily="Arial, Helvetica, sans-serif"
+        fontWeight="800"
+        fontSize="26"
+        fill="#9B1B7E"
+        letterSpacing="0.5"
+      >
+        W
+      </text>
+    </svg>
+  );
+}
+
 function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSecret: string }) {
   const stripe = useStripe();
   const elements = useElements();
@@ -282,42 +328,46 @@ function CheckoutForm({ listingId, clientSecret }: { listingId: number; clientSe
   return (
     <div className="space-y-6">
       <div className="space-y-3">
-        <div className="flex items-center gap-1.5 text-sm font-medium">
-          <QrCode className="h-4 w-4" /> Pay with PayNow
+        <div className="overflow-hidden rounded-lg border border-border">
+          <div className="flex items-center justify-center border-b border-border bg-white px-4 py-3">
+            <PayNowLogo className="h-6" />
+          </div>
+
+          <div className="flex flex-col items-center gap-2 bg-white p-4">
+            {payNowLoading && !payNowQr && (
+              <div className="flex flex-col items-center gap-2 py-4">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                <p className="text-sm text-muted-foreground">Loading QR code...</p>
+              </div>
+            )}
+
+            {payNowQr && (
+              <>
+                <img
+                  src={payNowQr.imageUrl}
+                  alt="PayNow QR code"
+                  className="h-48 w-48 rounded-md border border-border p-2"
+                  data-testid="img-paynow-qr"
+                />
+                <p className="text-sm text-muted-foreground text-center">
+                  Scan this with your banking or payment app to complete this payment.
+                </p>
+              </>
+            )}
+
+            {!payNowLoading && !payNowQr && (
+              <Button
+                className="w-full"
+                variant="outline"
+                onClick={loadPayNowQr}
+                disabled={!stripe}
+                data-testid="button-confirm-paynow"
+              >
+                Show PayNow QR code
+              </Button>
+            )}
+          </div>
         </div>
-
-        {payNowLoading && !payNowQr && (
-          <div className="flex flex-col items-center gap-2 py-4">
-            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-            <p className="text-sm text-muted-foreground">Loading QR code...</p>
-          </div>
-        )}
-
-        {payNowQr && (
-          <div className="flex flex-col items-center gap-2 rounded-lg border border-border p-4">
-            <img
-              src={payNowQr.imageUrl}
-              alt="PayNow QR code"
-              className="h-48 w-48 rounded-md bg-white p-2"
-              data-testid="img-paynow-qr"
-            />
-            <p className="text-sm text-muted-foreground text-center">
-              Scan this with your banking or payment app to complete this payment.
-            </p>
-          </div>
-        )}
-
-        {!payNowLoading && !payNowQr && (
-          <Button
-            className="w-full"
-            variant="outline"
-            onClick={loadPayNowQr}
-            disabled={!stripe}
-            data-testid="button-confirm-paynow"
-          >
-            Show PayNow QR code
-          </Button>
-        )}
       </div>
 
       <div className="h-px bg-border" />

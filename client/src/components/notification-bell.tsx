@@ -116,6 +116,11 @@ export function NotificationBell() {
                       const params = new URLSearchParams({ tab: "messages" });
                       if (n.relatedUserId) params.set("participant", String(n.relatedUserId));
                       navigate(`/listings/${n.relatedListingId}?${params.toString()}`);
+                    } else if (n.type === "new_bid" && n.relatedListingId) {
+                      // Land directly on the Bids tab, where the poster can
+                      // accept or reject the new bid — explicit query param
+                      // rather than relying on it being the default tab.
+                      navigate(`/listings/${n.relatedListingId}?tab=bids`);
                     } else if (n.relatedListingId) {
                       navigate(`/listings/${n.relatedListingId}`);
                     }

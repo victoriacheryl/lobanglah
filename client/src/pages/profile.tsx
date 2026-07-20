@@ -79,11 +79,14 @@ export default function Profile() {
             <p className="text-muted-foreground text-xs mb-0.5">Mobile number</p>
             <p data-testid="text-profile-phone">{user.phone}</p>
           </div>
-          <p className="text-xs text-muted-foreground flex items-start gap-1.5 pt-2 border-t border-border mt-3">
+          <div className="text-xs text-muted-foreground flex items-start gap-1.5 pt-2 border-t border-border mt-3">
             <Mail className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            Your email and mobile number are verified and can't be changed here. Email{" "}
-            <a href="mailto:hello@lobanglah.sg" className="text-primary font-medium">hello@lobanglah.sg</a> for assistance.
-          </p>
+            <p>
+              Your email and mobile number are verified and can't be changed here. Email{" "}
+              <a href="mailto:hello@lobanglah.sg" className="text-primary font-medium">hello@lobanglah.sg</a> for
+              assistance.
+            </p>
+          </div>
         </CardContent>
       </Card>
 
