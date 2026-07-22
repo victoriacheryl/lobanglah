@@ -8,11 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/status-badge";
-import { formatSGD, formatDate, formatDateTime, formatListingNumber } from "@/lib/format";
+import { formatSGD, formatDate, formatDateTime, formatListingNumber, daysLeft } from "@/lib/format";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -35,6 +35,8 @@ import {
   Ban,
   RotateCcw,
   Trash2,
+  Clock,
+  CalendarClock,
 } from "lucide-react";
 import type { Listing, Bid, FeeCharge, Message } from "@shared/schema";
 import { PaymentMethodDialog } from "@/components/payment-method-dialog";
@@ -182,8 +184,26 @@ export default function ListingDetail() {
 
   const [editingBid, setEditingBid] = useState<BidWithBidder | null>(null);
   const [deletingBid, setDeletingBid] = useState<BidWithBidder | null>(null);
+  const [extending, setExtending] = useState(false);
 
   const invalidateBids = () => queryClient.invalidateQueries({ queryKey: [`/api/listings/${listingId}/bids`] });
+
+  // Admin-only: push a still-live listing's 7-day auto-close date further out.
+  const extendMutation = useMutation({
+    mutationFn: async (days: number) => {
+      const res = await apiRequest("POST", `/api/admin/listings/${listingId}/extend`, { days });
+      return res.json();
+    },
+    onSuccess: (updated: Listing) => {
+      queryClient.invalidateQueries({ queryKey: [`/api/listings/${listingId}`] });
+      toast({
+        title: "Listing extended",
+        description: updated.expiresAt ? `Now closes ${formatDate(updated.expiresAt)}.` : undefined,
+      });
+      setExtending(false);
+    },
+    onError: (err: any) => toast({ title: "Could not extend listing", description: err.message, variant: "destructive" }),
+  });
 
   // Self-service edit (own pending bid) and admin edit (any bid) share one
   // dialog and mutation — which endpoint gets hit depends on whose bid it is.
@@ -315,6 +335,34 @@ export default function ListingDetail() {
           <div className="flex items-center gap-1.5 text-sm text-muted-foreground" data-testid="text-location">
             <MapPin className="h-3.5 w-3.5 shrink-0" /> {listing.location}
           </div>
+          {listing.status === "live" && listing.expiresAt && (
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div
+                className={`flex items-center gap-1.5 text-sm ${
+                  daysLeft(listing.expiresAt) <= 2 ? "text-destructive" : "text-muted-foreground"
+                }`}
+                data-testid="text-closing"
+              >
+                <Clock className="h-3.5 w-3.5 shrink-0" />
+                {(() => {
+                  const remaining = daysLeft(listing.expiresAt);
+                  const label = remaining === 0 ? "Closes today" : remaining === 1 ? "Closes tomorrow" : `Closes in ${remaining} days`;
+                  return `${label} (${formatDate(listing.expiresAt)})`;
+                })()}
+              </div>
+              {isAdmin && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 h-7 text-xs"
+                  onClick={() => setExtending(true)}
+                  data-testid="button-extend-listing"
+                >
+                  <CalendarClock className="h-3.5 w-3.5" /> Extend
+                </Button>
+              )}
+            </div>
+          )}
           <p className="text-sm text-foreground/80 whitespace-pre-wrap" data-testid="text-listing-description">{listing.description}</p>
           <div className="flex items-center justify-between text-xs text-muted-foreground border-t border-border pt-3">
             <span>Posted by {listing.ownerName}</span>
@@ -591,6 +639,14 @@ export default function ListingDetail() {
         saving={updateBidMutation.isPending}
       />
 
+      <ExtendListingDialog
+        open={extending}
+        onOpenChange={setExtending}
+        onExtend={(days) => extendMutation.mutate(days)}
+        extending={extendMutation.isPending}
+        currentExpiresAt={listing.expiresAt}
+      />
+
       <AlertDialog open={!!deletingBid} onOpenChange={(open) => !open && setDeletingBid(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -686,6 +742,76 @@ function EditBidDialog({
             </div>
           </div>
         )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+const EXTEND_PRESETS = [
+  { label: "+3 days", days: 3 },
+  { label: "+7 days", days: 7 },
+  { label: "+14 days", days: 14 },
+  { label: "+30 days", days: 30 },
+];
+
+/** Admin-only: pick how many days to push a live listing's auto-close date
+ *  out by. Stacks onto its current expiresAt (or createdAt + 7 days for a
+ *  legacy row) rather than resetting from today — see storage.extendListing. */
+function ExtendListingDialog({
+  open,
+  onOpenChange,
+  onExtend,
+  extending,
+  currentExpiresAt,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onExtend: (days: number) => void;
+  extending: boolean;
+  currentExpiresAt: number | null;
+}) {
+  const [days, setDays] = useState("7");
+
+  const newExpiry = currentExpiresAt != null ? currentExpiresAt + Number(days) * 24 * 60 * 60 * 1000 : null;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Extend this listing</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <p className="text-xs text-muted-foreground">
+            Pushes the auto-close date further out. It stays open for bids until then, or until the poster's target
+            headcount is reached, whichever comes first.
+          </p>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium">Extend by</label>
+            <Select value={days} onValueChange={setDays}>
+              <SelectTrigger data-testid="select-extend-days">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {EXTEND_PRESETS.map((p) => (
+                  <SelectItem key={p.days} value={String(p.days)}>
+                    {p.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {newExpiry && (
+            <p className="text-xs text-muted-foreground">New closing date: {formatDate(newExpiry)}</p>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button disabled={extending} onClick={() => onExtend(Number(days))} data-testid="button-confirm-extend">
+            {extending ? "Extending..." : `Extend by ${EXTEND_PRESETS.find((p) => String(p.days) === days)?.label ?? `${days} days`}`}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

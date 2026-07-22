@@ -4,7 +4,7 @@ import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
-import { Bell, FileCheck2, Gavel, CheckCircle2, HandCoins, XCircle, Megaphone, MessageCircle, RotateCcw, Ban, Clock } from "lucide-react";
+import { Bell, FileCheck2, Gavel, CheckCircle2, HandCoins, XCircle, Megaphone, MessageCircle, RotateCcw, Ban, Clock, CalendarClock } from "lucide-react";
 import { useState } from "react";
 import type { Notification } from "@shared/schema";
 import { formatDateTime } from "@/lib/format";
@@ -24,6 +24,7 @@ const ICONS: Record<string, React.ElementType> = {
   listing_approved: CheckCircle2,
   listing_rejected: XCircle,
   listing_expired: Clock,
+  listing_extended: CalendarClock,
   announcement: Megaphone,
 };
 

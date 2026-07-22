@@ -1607,6 +1607,54 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/admin/listings/{id}/extend:
+    post:
+      tags: [Admin]
+      summary: Push a live listing's auto-close date further out
+      description: >-
+        Adds the given number of days to the listing's current expiresAt (or, for a listing that
+        predates the expiresAt column, createdAt + 7 days) — repeated extensions stack from
+        wherever the closing date currently stands rather than resetting from today. Only valid
+        on a "live" listing; pending/rejected/already-closed listings aren't counting down.
+        Notifies the poster of the new closing date.
+      parameters:
+        - $ref: "#/components/parameters/ListingId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [days]
+              properties:
+                days: { type: integer, minimum: 1, maximum: 90 }
+      responses:
+        "200":
+          description: Extended
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Listing" }
+        "400":
+          description: Listing not live, or invalid days value
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Listing not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/admin/listings/{id}:
     delete:
       tags: [Admin]
@@ -2262,6 +2310,13 @@ components:
         status: { type: string, enum: [pending, live, rejected, closed] }
         rejectionReason: { type: string, nullable: true }
         createdAt: { type: integer }
+        expiresAt:
+          type: integer
+          nullable: true
+          description: >-
+            Unix ms timestamp this listing auto-closes at if still "live" — defaults to
+            createdAt + 7 days, extendable by an admin via POST /api/admin/listings/{id}/extend.
+            Null only for a listing that predates this column.
 
     ListingWithOwner:
       allOf:
@@ -2452,6 +2507,7 @@ components:
               listing_approved,
               listing_rejected,
               listing_expired,
+              listing_extended,
               announcement,
             ]
         title: { type: string }

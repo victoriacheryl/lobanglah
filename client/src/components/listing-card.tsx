@@ -1,14 +1,18 @@
 import { Link } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { formatDate, formatListingNumber } from "@/lib/format";
+import { formatDate, formatListingNumber, daysLeft } from "@/lib/format";
 import type { Listing } from "@shared/schema";
 import { StatusBadge } from "./status-badge";
-import { MapPin } from "lucide-react";
+import { MapPin, Clock } from "lucide-react";
 
 type ListingWithOwner = Listing & { ownerName?: string };
 
 export function ListingCard({ listing, showStatus = false }: { listing: ListingWithOwner; showStatus?: boolean }) {
+  // Only live listings are actually counting down to auto-close — pending,
+  // rejected, and already-closed ones have nothing left to show here.
+  const remaining = listing.status === "live" && listing.expiresAt ? daysLeft(listing.expiresAt) : null;
+
   return (
     <Link href={`/listings/${listing.id}`} data-testid={`card-listing-${listing.id}`} className="block">
         <Card className="h-full transition-shadow hover:shadow-md">
@@ -35,8 +39,19 @@ export function ListingCard({ listing, showStatus = false }: { listing: ListingW
               {listing.title}
             </h3>
             <p className="text-sm text-muted-foreground line-clamp-2">{listing.description}</p>
-            <div className="flex items-center gap-1 text-xs text-muted-foreground" data-testid={`text-location-${listing.id}`}>
-              <MapPin className="h-3 w-3 shrink-0" /> {listing.location}
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-1 text-xs text-muted-foreground" data-testid={`text-location-${listing.id}`}>
+                <MapPin className="h-3 w-3 shrink-0" /> {listing.location}
+              </div>
+              {remaining !== null && (
+                <div
+                  className={`flex items-center gap-1 text-xs ${remaining <= 2 ? "text-destructive" : "text-muted-foreground"}`}
+                  data-testid={`text-closing-${listing.id}`}
+                >
+                  <Clock className="h-3 w-3 shrink-0" />
+                  {remaining === 0 ? "Closes today" : remaining === 1 ? "Closes tomorrow" : `${remaining} days left`}
+                </div>
+              )}
             </div>
             <div className="mt-1 flex items-center justify-between">
               <span className="text-xs text-muted-foreground">{listing.category}</span>

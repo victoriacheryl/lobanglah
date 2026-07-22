@@ -185,6 +185,14 @@ export const SG_TOWNS = [
 
 export type SgTown = (typeof SG_TOWNS)[number];
 
+// A "live" listing auto-closes after this many days if it hasn't reached its
+// target headcount of accepted bids yet. Shared by the server (which
+// actually enforces it — see storage.ts's closeExpiredListings) and the
+// client (which uses it to show posters/bidders how much time is left),
+// so the two can never drift apart.
+export const LISTING_EXPIRY_DAYS = 7;
+export const LISTING_EXPIRY_MS = LISTING_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
+
 export const listings = sqliteTable("listings", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: integer("user_id").notNull(),
@@ -209,6 +217,14 @@ export const listings = sqliteTable("listings", {
     .default("pending"),
   rejectionReason: text("rejection_reason"),
   createdAt: integer("created_at").notNull(),
+  // When this listing auto-closes if it hasn't already reached quantityNeeded
+  // accepted bids — set to createdAt + 7 days when the listing is created,
+  // same cutoff closeExpiredListings() always enforced, just now an explicit,
+  // independently adjustable column instead of purely derived from createdAt.
+  // Null only for rows that predate this column (backfilled by migration
+  // 0008; closeExpiredListings falls back to the old createdAt-based cutoff
+  // for any that somehow remain null).
+  expiresAt: integer("expires_at"),
 });
 
 export const insertListingSchema = createInsertSchema(listings)
@@ -223,6 +239,13 @@ export const insertListingSchema = createInsertSchema(listings)
 
 export type InsertListing = z.infer<typeof insertListingSchema>;
 export type Listing = typeof listings.$inferSelect;
+
+// Admin-only: push a live listing's auto-close date further out.
+export const extendListingSchema = z.object({
+  days: z.number().int().min(1).max(90),
+});
+
+export type ExtendListingInput = z.infer<typeof extendListingSchema>;
 
 // ---------- Bids ----------
 export const bids = sqliteTable("bids", {
@@ -356,6 +379,7 @@ export const notifications = sqliteTable("notifications", {
       "listing_approved",
       "listing_rejected",
       "listing_expired",
+      "listing_extended",
       "announcement",
     ],
   }).notNull(),

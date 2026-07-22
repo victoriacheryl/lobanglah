@@ -24,6 +24,7 @@ import {
   registerVerifySchema,
   verifyEmailLinkSchema,
   insertListingSchema,
+  extendListingSchema,
   insertBidSchema,
   bidUpdateSchema,
   adminUpdateBidSchema,
@@ -844,6 +845,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (err: any) {
       const status = err.message === "Listing not found" ? 404 : 400;
       res.status(status).json({ message: err.message || "Could not close listing" });
+    }
+  });
+
+  // Admin-only: push a still-live listing's 7-day auto-close date further out.
+  app.post("/api/admin/listings/:id/extend", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const data = extendListingSchema.parse(req.body);
+      const listing = await storage.extendListing(Number(req.params.id), data.days);
+      res.json(listing);
+    } catch (err: any) {
+      const status = err.message === "Listing not found" ? 404 : 400;
+      res.status(status).json({ message: friendlyError(err, "Could not extend listing") });
     }
   });
 

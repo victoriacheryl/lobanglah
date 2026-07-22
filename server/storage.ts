@@ -63,6 +63,16 @@ migrate(db, { migrationsFolder });
 // are transparently re-hashed into the new format on next successful login.
 const PBKDF2_ITERATIONS = 100_000;
 
+// How long a "live" listing stays open before auto-closing if it hasn't
+// reached its target headcount of accepted bids — used both to set a fresh
+// listing's expiresAt on creation and as closeExpiredListings' fallback
+// cutoff for any pre-expiresAt-column rows. Previously this was declared
+// further down the file but never actually reachable from createListing
+// (and, for a stretch, wasn't declared at all — closeExpiredListings was
+// silently throwing "SEVEN_DAYS_MS is not defined" on every sweep, so the
+// listing auto-close feature was effectively dead until this fix).
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
 // Seed an admin account for demo purposes if none exists yet.
 //
 // SECURITY: the admin password is never hardcoded. It is read from the
@@ -553,6 +563,7 @@ export interface IStorage {
   rejectListing(id: number, reason: string): Promise<Listing | undefined>;
   adminRemoveListing(id: number): Promise<void>;
   adminCloseListing(id: number): Promise<Listing>;
+  extendListing(id: number, days: number): Promise<Listing>;
 
   // bids
   createBid(listingId: number, bidderId: number, bid: InsertBid): Promise<Bid>;
@@ -803,9 +814,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createListing(userId: number, listing: InsertListing): Promise<Listing> {
+    const now = Date.now();
     const created = db
       .insert(listings)
-      .values({ ...listing, userId, status: "pending", createdAt: Date.now() })
+      .values({ ...listing, userId, status: "pending", createdAt: now, expiresAt: now + SEVEN_DAYS_MS })
       .returning()
       .get();
     // Notify every admin so postings for review show up in their notification bell.
@@ -961,6 +973,32 @@ export class DatabaseStorage implements IStorage {
       "listing_rejected",
       "Your listing was closed",
       `An admin closed "${listing.title}". Reach out if you have questions.`,
+      id
+    );
+
+    return updated;
+  }
+
+  /** Admin-only: pushes a still-live listing's auto-close date further out by
+   *  the given number of days, added to its current expiresAt (or, for a
+   *  legacy row with no expiresAt yet, to createdAt + 7 days) — so repeated
+   *  extensions stack from wherever it currently stands rather than always
+   *  resetting from "now". Only meaningful on a "live" listing; closed/
+   *  rejected/pending listings aren't counting down. */
+  async extendListing(id: number, days: number): Promise<Listing> {
+    const listing = await this.getListing(id);
+    if (!listing) throw new Error("Listing not found");
+    if (listing.status !== "live") throw new Error("Only a live listing's closing date can be extended");
+
+    const base = listing.expiresAt ?? listing.createdAt + SEVEN_DAYS_MS;
+    const expiresAt = base + days * 24 * 60 * 60 * 1000;
+    const updated = db.update(listings).set({ expiresAt }).where(eq(listings.id, id)).returning().get();
+
+    await this.createNotification(
+      listing.userId,
+      "listing_extended",
+      "Your posting's closing date was extended",
+      `An admin extended "${listing.title}" by ${days} day${days === 1 ? "" : "s"} — it now closes on ${new Date(expiresAt).toLocaleDateString("en-SG", { day: "numeric", month: "short", year: "numeric" })}.`,
       id
     );
 
@@ -1733,22 +1771,29 @@ export class DatabaseStorage implements IStorage {
 
 export const storage = new DatabaseStorage();
 
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-
-/** Auto-closes any "live" listing that's been open 7+ days without reaching
- *  its target headcount of accepted bids — this is what backs the copy on
- *  the "Post a Lobang" form ("the posting stays open for 7 days, or until
- *  you've accepted that many bids, whichever earlier"). Rejects any bids
- *  still pending on it, same as when a listing closes normally by reaching
- *  quota (see rejectOtherPendingBids above), and lets the poster know why
- *  it closed. Safe to call repeatedly — only touches listings that are
- *  still "live" and past the 7-day cutoff. */
+/** Auto-closes any "live" listing whose expiresAt has passed without
+ *  reaching its target headcount of accepted bids — this is what backs the
+ *  copy on the "Post a Lobang" form ("the posting stays open for 7 days, or
+ *  until you've accepted that many bids, whichever earlier"). expiresAt
+ *  defaults to createdAt + 7 days but an admin can push it out further via
+ *  extendListing below. Rows that predate the expiresAt column (null) fall
+ *  back to the old createdAt + 7 days cutoff. Rejects any bids still pending
+ *  on it, same as when a listing closes normally by reaching quota (see
+ *  rejectOtherPendingBids above), and lets the poster know why it closed.
+ *  Safe to call repeatedly — only touches listings that are still "live"
+ *  and past their cutoff. */
 export async function closeExpiredListings(): Promise<void> {
-  const cutoff = Date.now() - SEVEN_DAYS_MS;
+  const now = Date.now();
+  const legacyCutoff = now - SEVEN_DAYS_MS;
   const stale = db
     .select()
     .from(listings)
-    .where(and(eq(listings.status, "live"), lte(listings.createdAt, cutoff)))
+    .where(
+      and(
+        eq(listings.status, "live"),
+        or(lte(listings.expiresAt, now), and(isNull(listings.expiresAt), lte(listings.createdAt, legacyCutoff)))
+      )
+    )
     .all();
 
   for (const listing of stale) {
