@@ -20,6 +20,7 @@ import Checkout from "@/pages/checkout";
 import MyListings from "@/pages/my-listings";
 import Wallet from "@/pages/wallet";
 import Contact from "@/pages/contact";
+import DataProtectionPolicy from "@/pages/data-protection-policy";
 import Profile from "@/pages/profile";
 import Admin from "@/pages/admin";
 import Users from "@/pages/users";
@@ -38,6 +39,7 @@ function AppRouter() {
       <Route path="/my-listings" component={MyListings} />
       <Route path="/wallet" component={Wallet} />
       <Route path="/contact" component={Contact} />
+      <Route path="/data-protection-policy" component={DataProtectionPolicy} />
       <Route path="/profile" component={Profile} />
       <Route path="/admin" component={Admin} />
       <Route path="/admin/users" component={Users} />

@@ -214,6 +214,13 @@ export default function Register() {
                       </FormItem>
                     )}
                   />
+                  <p className="text-xs text-muted-foreground text-center">
+                    By continuing, you agree to how we collect and use your personal data as described in our{" "}
+                    <Link href="/data-protection-policy" className="text-primary font-medium" data-testid="link-data-protection-policy">
+                      Data Protection Policy
+                    </Link>
+                    .
+                  </p>
                   <Button type="submit" className="w-full" disabled={submitting} data-testid="button-submit-register">
                     {submitting ? "Sending code..." : "Continue"}
                   </Button>
