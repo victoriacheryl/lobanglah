@@ -12,13 +12,15 @@ export function ListingCard({ listing, showStatus = false }: { listing: ListingW
   // Only live listings are actually counting down to auto-close — pending,
   // rejected, and already-closed ones have nothing left to show here.
   const remaining = listing.status === "live" && listing.expiresAt ? daysLeft(listing.expiresAt) : null;
+  const urgent = remaining !== null && remaining <= 2;
+  const closingLabel = remaining === 0 ? "Closes today" : remaining === 1 ? "Closes tomorrow" : `${remaining} days left`;
 
   return (
     <Link href={`/listings/${listing.id}`} data-testid={`card-listing-${listing.id}`} className="block">
-        <Card className="h-full transition-shadow hover:shadow-md">
+        <Card className={`h-full transition-shadow hover:shadow-md ${urgent ? "ring-1 ring-destructive/40" : ""}`}>
           <CardContent className="p-4 flex flex-col gap-2.5">
             <div className="flex items-start justify-between gap-2">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <Badge
                   variant="outline"
                   className={
@@ -30,6 +32,19 @@ export function ListingCard({ listing, showStatus = false }: { listing: ListingW
                   {listing.type === "seek" ? "Seeking" : "Offering"}
                 </Badge>
                 {showStatus && <StatusBadge status={listing.status} />}
+                {remaining !== null && (
+                  <Badge
+                    variant="outline"
+                    className={`gap-1 text-xs font-semibold ${
+                      urgent
+                        ? "bg-destructive/15 text-destructive border-destructive/30 animate-pulse"
+                        : "bg-chart-3/15 text-chart-3 border-chart-3/30"
+                    }`}
+                    data-testid={`badge-closing-${listing.id}`}
+                  >
+                    <Clock className="h-3 w-3 shrink-0" /> {closingLabel}
+                  </Badge>
+                )}
               </div>
               <span className="text-xs font-mono text-muted-foreground shrink-0" data-testid={`text-listing-number-${listing.id}`}>
                 #{formatListingNumber(listing.id)}
@@ -39,19 +54,8 @@ export function ListingCard({ listing, showStatus = false }: { listing: ListingW
               {listing.title}
             </h3>
             <p className="text-sm text-muted-foreground line-clamp-2">{listing.description}</p>
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex items-center gap-1 text-xs text-muted-foreground" data-testid={`text-location-${listing.id}`}>
-                <MapPin className="h-3 w-3 shrink-0" /> {listing.location}
-              </div>
-              {remaining !== null && (
-                <div
-                  className={`flex items-center gap-1 text-xs ${remaining <= 2 ? "text-destructive" : "text-muted-foreground"}`}
-                  data-testid={`text-closing-${listing.id}`}
-                >
-                  <Clock className="h-3 w-3 shrink-0" />
-                  {remaining === 0 ? "Closes today" : remaining === 1 ? "Closes tomorrow" : `${remaining} days left`}
-                </div>
-              )}
+            <div className="flex items-center gap-1 text-xs text-muted-foreground" data-testid={`text-location-${listing.id}`}>
+              <MapPin className="h-3 w-3 shrink-0" /> {listing.location}
             </div>
             <div className="mt-1 flex items-center justify-between">
               <span className="text-xs text-muted-foreground">{listing.category}</span>

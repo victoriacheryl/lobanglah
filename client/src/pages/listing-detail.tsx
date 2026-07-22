@@ -335,34 +335,37 @@ export default function ListingDetail() {
           <div className="flex items-center gap-1.5 text-sm text-muted-foreground" data-testid="text-location">
             <MapPin className="h-3.5 w-3.5 shrink-0" /> {listing.location}
           </div>
-          {listing.status === "live" && listing.expiresAt && (
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div
-                className={`flex items-center gap-1.5 text-sm ${
-                  daysLeft(listing.expiresAt) <= 2 ? "text-destructive" : "text-muted-foreground"
-                }`}
-                data-testid="text-closing"
-              >
-                <Clock className="h-3.5 w-3.5 shrink-0" />
-                {(() => {
-                  const remaining = daysLeft(listing.expiresAt);
-                  const label = remaining === 0 ? "Closes today" : remaining === 1 ? "Closes tomorrow" : `Closes in ${remaining} days`;
-                  return `${label} (${formatDate(listing.expiresAt)})`;
-                })()}
-              </div>
-              {isAdmin && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="gap-1.5 h-7 text-xs"
-                  onClick={() => setExtending(true)}
-                  data-testid="button-extend-listing"
+          {listing.status === "live" &&
+            listing.expiresAt &&
+            (() => {
+              const remaining = daysLeft(listing.expiresAt);
+              const urgent = remaining <= 2;
+              const label = remaining === 0 ? "Closes today" : remaining === 1 ? "Closes tomorrow" : `Closes in ${remaining} days`;
+              return (
+                <div
+                  className={`flex items-center justify-between gap-3 flex-wrap rounded-lg border px-3 py-2.5 ${
+                    urgent ? "bg-destructive/10 border-destructive/30" : "bg-chart-3/10 border-chart-3/30"
+                  }`}
+                  data-testid="text-closing"
                 >
-                  <CalendarClock className="h-3.5 w-3.5" /> Extend
-                </Button>
-              )}
-            </div>
-          )}
+                  <div className={`flex items-center gap-2 text-sm font-semibold ${urgent ? "text-destructive" : "text-chart-3"}`}>
+                    <Clock className={`h-4 w-4 shrink-0 ${urgent ? "animate-pulse" : ""}`} />
+                    {label} ({formatDate(listing.expiresAt)})
+                  </div>
+                  {isAdmin && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5 h-7 text-xs bg-background"
+                      onClick={() => setExtending(true)}
+                      data-testid="button-extend-listing"
+                    >
+                      <CalendarClock className="h-3.5 w-3.5" /> Extend
+                    </Button>
+                  )}
+                </div>
+              );
+            })()}
           <p className="text-sm text-foreground/80 whitespace-pre-wrap" data-testid="text-listing-description">{listing.description}</p>
           <div className="flex items-center justify-between text-xs text-muted-foreground border-t border-border pt-3">
             <span>Posted by {listing.ownerName}</span>
