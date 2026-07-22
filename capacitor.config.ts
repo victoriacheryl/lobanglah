@@ -21,8 +21,7 @@ const config: CapacitorConfig = {
   appName: 'LobangLah!',
   webDir: 'dist/public',
   server: {
-    // TODO: replace with your real deployed URL, e.g. https://lobanglah.pplx.app
-    url: 'https://REPLACE-WITH-YOUR-DEPLOYED-URL.example.com',
+    url: 'https://lobanglah-production.up.railway.app',
     androidScheme: 'https',
     cleartext: false,
   },
