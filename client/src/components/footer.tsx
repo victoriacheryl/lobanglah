@@ -16,11 +16,11 @@ import { Link } from "wouter";
  */
 export function Footer() {
   return (
-    <footer className="border-t border-border bg-card pb-16 md:pb-0" data-testid="footer-site">
-      <div className="mx-auto max-w-6xl px-4 sm:px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-muted-foreground">
+    <footer className="border-t border-border bg-primary pb-16 md:pb-0" data-testid="footer-site">
+      <div className="mx-auto max-w-6xl px-4 sm:px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-primary-foreground/80">
         <span data-testid="text-copyright">Copyright©2026 LobangLah.sg</span>
         <nav className="flex items-center gap-3">
-          <Link href="/terms-of-use" className="hover:text-foreground" data-testid="link-footer-terms-of-use">
+          <Link href="/terms-of-use" className="hover:text-primary-foreground" data-testid="link-footer-terms-of-use">
             Terms of Use
           </Link>
         </nav>
