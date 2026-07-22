@@ -26,14 +26,6 @@ export default function DataProtectionPolicy() {
         <p className="text-sm text-muted-foreground">Last updated 22 Jul 2026.</p>
       </div>
 
-      <div className="rounded-md border border-dashed border-border bg-muted/50 px-3 py-3 text-xs text-muted-foreground">
-        <strong className="text-foreground">Draft notice:</strong> this policy was drafted to describe how
-        LobangLah! actually collects and uses data today. It is not legal advice. Before relying on it, have it
-        reviewed by a qualified lawyer or data protection professional to confirm it meets your obligations under
-        Singapore's Personal Data Protection Act 2012 (PDPA) — including whether a Data Protection Officer needs to
-        be appointed and registered with the Personal Data Protection Commission (PDPC).
-      </div>
-
       <div className="space-y-5 text-sm text-foreground/90">
         <p>
           LobangLah! ("we", "us", "our") connects Singapore residents to seek or offer local services and goods. This

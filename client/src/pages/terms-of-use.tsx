@@ -22,13 +22,6 @@ export default function TermsOfUse() {
         <p className="text-sm text-muted-foreground">Last updated 22 Jul 2026.</p>
       </div>
 
-      <div className="rounded-md border border-dashed border-border bg-muted/50 px-3 py-3 text-xs text-muted-foreground">
-        <strong className="text-foreground">Draft notice:</strong> this is a starting draft describing how
-        LobangLah! actually works today. It is not legal advice. Have it reviewed by a qualified lawyer before
-        relying on it as your binding terms — in particular the limitation-of-liability, dispute-resolution, and
-        termination sections, which carry real legal weight once published.
-      </div>
-
       <div className="space-y-5 text-sm text-foreground/90">
         <p>
           These Terms of Use ("Terms") govern your access to and use of LobangLah! ("we", "us", "our"), a platform
