@@ -7,6 +7,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/lib/auth";
 import { ThemeProvider } from "@/lib/theme";
 import { Header } from "@/components/header";
+import { Footer } from "@/components/footer";
 import { BottomToolbar } from "@/components/bottom-toolbar";
 import NotFound from "@/pages/not-found";
 import Home from "@/pages/home";
@@ -21,6 +22,7 @@ import MyListings from "@/pages/my-listings";
 import Wallet from "@/pages/wallet";
 import Contact from "@/pages/contact";
 import DataProtectionPolicy from "@/pages/data-protection-policy";
+import TermsOfUse from "@/pages/terms-of-use";
 import Profile from "@/pages/profile";
 import Admin from "@/pages/admin";
 import Users from "@/pages/users";
@@ -40,6 +42,7 @@ function AppRouter() {
       <Route path="/wallet" component={Wallet} />
       <Route path="/contact" component={Contact} />
       <Route path="/data-protection-policy" component={DataProtectionPolicy} />
+      <Route path="/terms-of-use" component={TermsOfUse} />
       <Route path="/profile" component={Profile} />
       <Route path="/admin" component={Admin} />
       <Route path="/admin/users" component={Users} />
@@ -58,9 +61,10 @@ function App() {
             <Router hook={useHashLocation}>
               <div className="min-h-dvh flex flex-col">
                 <Header />
-                <main className="flex-1 pb-16 md:pb-0">
+                <main className="flex-1">
                   <AppRouter />
                 </main>
+                <Footer />
                 <BottomToolbar />
               </div>
             </Router>

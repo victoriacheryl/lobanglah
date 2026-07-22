@@ -215,7 +215,11 @@ export default function Register() {
                     )}
                   />
                   <p className="text-xs text-muted-foreground text-center">
-                    By continuing, you agree to how we collect and use your personal data as described in our{" "}
+                    By continuing, you agree to our{" "}
+                    <Link href="/terms-of-use" className="text-primary font-medium" data-testid="link-terms-of-use">
+                      Terms of Use
+                    </Link>{" "}
+                    and{" "}
                     <Link href="/data-protection-policy" className="text-primary font-medium" data-testid="link-data-protection-policy">
                       Data Protection Policy
                     </Link>
